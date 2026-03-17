@@ -43,6 +43,9 @@ def _safe_request(r):
             "response_body": r.text[:1000],
             "request_body": r.request.content.decode()[:1000] if r.request.content else "",
         }
+    # 201 Created 등 body가 비어있는 경우
+    if not r.text.strip():
+        return {"success": True, "status": r.status_code}
     return r.json()
 
 
@@ -60,12 +63,27 @@ def get_master_groups() -> dict:
 
 
 @tool
+def create_master_group(name: str) -> dict:
+    """마스터 그룹을 생성합니다. 이름만 넣으면 됩니다.
+
+    Args:
+        name: 마스터 그룹명
+    """
+    with _client() as c:
+        r = c.post("/v1/master-groups", json={"name": name})
+        return _safe_request(r)
+
+
+@tool
 def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
-    """마스터(오피셜클럽) 목록을 검색합니다.
+    """마스터(오피셜클럽) 목록을 검색합니다. 결과의 cmsId를 다른 API의 masterId로 사용해야 합니다 (id가 아닌 cmsId).
 
     Args:
         search_keyword: 검색어 (마스터 이름)
         public_type: 공개 상태 필터 (ALL, PUBLIC, PENDING, PRIVATE)
+
+    Returns:
+        마스터 목록. 각 항목의 cmsId를 masterId로 사용. 예: cmsId="1" → masterId="1"
     """
     params = {}
     if search_keyword:

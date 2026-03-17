@@ -1,4 +1,5 @@
 from .admin_api import (
+    create_master_group,
     search_masters,
     get_master_detail,
     get_master_groups,
