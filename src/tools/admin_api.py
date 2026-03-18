@@ -14,6 +14,49 @@ ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "")
 PARTNER_BASE = os.environ.get("PARTNER_API_BASE_URL", "")
 PARTNER_TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
 PLACEHOLDER_IMAGE = "https://placehold.co/990x1100/e8e8e8/999?text=PLACEHOLDER"
+MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
+
+# Mock 응답 데이터
+MOCK_RESPONSES = {
+    "get_master_groups": {"masterGroups": [
+        {"id": "group_001", "name": "테스트 마스터 그룹", "masterCount": 1},
+        {"id": "group_002", "name": "김영익", "masterCount": 1},
+    ]},
+    "search_masters": [
+        {"id": "mock_master_001", "cmsId": "100", "name": "김영익", "createdAt": "2026-03-17", "publicType": "PUBLIC", "masterGroupId": "group_002", "masterGroupName": "김영익"},
+    ],
+    "get_master_detail": {"cmsId": "100", "name": "김영익", "displayName": "김영익", "clubPublicType": "PUBLIC", "clubName": "김영익의 투자클럽"},
+    "get_series_list": {"masters": [{"_id": "mock_master_001", "name": "김영익", "series": [
+        {"_id": "mock_series_001", "title": "투자 기초 시리즈"},
+        {"_id": "mock_series_002", "title": "경제 분석 리포트"},
+    ]}]},
+    "create_master_group": {"success": True, "status": 201},
+    "create_series": {"content": {"id": "mock_series_new", "cmsId": "300"}},
+    "get_product_page_list": [],  # 첫 조회는 빈 목록
+    "create_product_page": {"success": True, "status": 201},
+    "get_product_page_list_after": [{"id": "mock_page_001", "title": "테스트 상품 페이지", "status": "INACTIVE", "code": 999, "isAlwaysPublic": True, "isAlwaysApply": True, "startAt": "1970.01.01", "endAt": "9999.12.31", "applyStartAt": "1970-01-01", "applyEndAt": "9999-12-31", "createdAt": "2026-03-18", "isDeletable": True}],
+    "create_product": {"id": 99999},
+    "update_product_display": {"success": True, "status": 200},
+    "update_product_sequence": {"success": True, "status": 200},
+    "update_product_page_status": {"success": True, "status": 200},
+    "update_main_product_setting": {"success": True, "status": 200},
+    "get_product_page_detail": {"id": "mock_page_001", "masterId": "100", "title": "테스트 상품 페이지", "status": "INACTIVE", "type": "SUBSCRIPTION", "code": 999, "isAlwaysPublic": True, "isChangeable": True, "mainContents": [{"type": "IMAGE", "contentUrl": PLACEHOLDER_IMAGE}], "contents": [{"imageUrl": PLACEHOLDER_IMAGE, "sequence": 0}]},
+    "get_product_list_by_page": [{"productId": "99999", "name": "월간 구독", "price": 29900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": True, "viewSequence": 0}],
+}
+
+# product_page_list 호출 카운터 (첫 번째는 빈 목록, 두 번째부터 결과 반환)
+_product_page_list_call_count = 0
+
+
+def _get_mock(tool_name: str) -> dict | list:
+    """Mock 응답을 반환합니다."""
+    global _product_page_list_call_count
+    if tool_name == "get_product_page_list":
+        _product_page_list_call_count += 1
+        if _product_page_list_call_count <= 1:
+            return MOCK_RESPONSES["get_product_page_list"]
+        return MOCK_RESPONSES["get_product_page_list_after"]
+    return MOCK_RESPONSES.get(tool_name, {"mock": True, "tool": tool_name})
 
 
 def _client() -> httpx.Client:
@@ -61,6 +104,8 @@ def get_master_groups(name: str = "") -> dict:
     Args:
         name: 검색할 마스터 그룹명 (빈 문자열이면 전체 조회)
     """
+    if MOCK_MODE:
+        return _get_mock("get_master_groups")
     params = {"offset": 0, "limit": 100}
     if name:
         params["name"] = name
@@ -76,6 +121,8 @@ def create_master_group(name: str) -> dict:
     Args:
         name: 마스터 그룹명
     """
+    if MOCK_MODE:
+        return _get_mock("create_master_group")
     with _client() as c:
         r = c.post("/v1/master-groups", json={"name": name})
         return _safe_request(r)
@@ -92,6 +139,8 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
     Returns:
         마스터 목록. 각 항목의 cmsId를 masterId로 사용. 예: cmsId="1" → masterId="1"
     """
+    if MOCK_MODE:
+        return _get_mock("search_masters")
     params = {}
     if search_keyword:
         params["searchKeyword"] = search_keyword
@@ -110,6 +159,8 @@ def get_master_detail(master_id: str) -> dict:
     Args:
         master_id: 마스터 ID
     """
+    if MOCK_MODE:
+        return _get_mock("get_master_detail")
     with _client() as c:
         r = c.get(f"/v1/masters/{master_id}")
         return _safe_request(r)
@@ -122,6 +173,8 @@ def get_series_list(master_id: str) -> dict:
     Args:
         master_id: 마스터 ID
     """
+    if MOCK_MODE:
+        return _get_mock("get_series_list")
     with _client() as c:
         r = c.get("/with-series", params={"masterId": master_id, "seriesState": "PUBLISHED"})
         return _safe_request(r)
@@ -145,6 +198,8 @@ def create_series(
             economicTheory, foreignStock, cryptoCurrency,
             companyAnalysis, macroEconomics, personalFinance, safeAsset
     """
+    if MOCK_MODE:
+        return _get_mock("create_series")
     body = {
         "masterId": master_id,
         "title": title,
@@ -193,6 +248,8 @@ def create_product_page(
         apply_start_at: 신청 시작일
         apply_end_at: 신청 종료일
     """
+    if MOCK_MODE:
+        return _get_mock("create_product_page")
     body = {
         "masterId": master_id,
         "title": title,
@@ -278,6 +335,8 @@ def create_product(
         promo_end_at: 프로모션 종료일
         is_always_promotion: 상시 프로모션 여부
     """
+    if MOCK_MODE:
+        return _get_mock("create_product")
     body: dict = {
         "productGroupId": product_group_id,
         "name": name,
@@ -340,6 +399,8 @@ def update_product_display(product_id: str, is_display: bool = True) -> dict:
         product_id: 상품 ID
         is_display: 노출 여부
     """
+    if MOCK_MODE:
+        return _get_mock("update_product_display")
     with _client() as c:
         r = c.patch("/v1/product/display", json={"id": product_id, "isDisplay": is_display})
         return _safe_request(r)
@@ -353,6 +414,8 @@ def update_product_sequence(product_group_id: str, product_ids: list[str]) -> di
         product_group_id: 상품 페이지 ID
         product_ids: 상품 ID 배열 (원하는 순서대로)
     """
+    if MOCK_MODE:
+        return _get_mock("update_product_sequence")
     with _client() as c:
         r = c.patch(f"/v1/product/group/{product_group_id}/sequence", json={"ids": product_ids})
         return _safe_request(r)
@@ -366,6 +429,8 @@ def update_product_page_status(product_page_id: str, status: str = "ACTIVE") -> 
         product_page_id: 상품 페이지 ID
         status: 상태 (ACTIVE 또는 INACTIVE)
     """
+    if MOCK_MODE:
+        return _get_mock("update_product_page_status")
     with _client() as c:
         r = c.patch("/v1/product-group/status", json={"id": product_page_id, "status": status})
         return _safe_request(r)
@@ -384,6 +449,8 @@ def update_main_product_setting(
         view_status: 노출 상태 (ACTIVE, INACTIVE, EXCLUDED)
         product_group_type: 상품 그룹 타입 (US_PLUS 또는 US_CAMPUS)
     """
+    if MOCK_MODE:
+        return _get_mock("update_main_product_setting")
     body = {
         "productGroupType": product_group_type,
         "productGroupViewStatus": view_status,
@@ -407,6 +474,8 @@ def get_product_page_list(master_id: str) -> dict:
     Args:
         master_id: 마스터 cmsId (예: "136")
     """
+    if MOCK_MODE:
+        return _get_mock("get_product_page_list")
     with _client() as c:
         r = c.get("/v1/product-group", params={"masterId": master_id})
         return _safe_request(r)
@@ -419,6 +488,8 @@ def get_product_page_detail(product_page_id: str) -> dict:
     Args:
         product_page_id: 상품 페이지 ID
     """
+    if MOCK_MODE:
+        return _get_mock("get_product_page_detail")
     with _client() as c:
         r = c.get(f"/v1/product-group/{product_page_id}")
         return _safe_request(r)
@@ -431,6 +502,8 @@ def get_product_list_by_page(product_page_id: str) -> dict:
     Args:
         product_page_id: 상품 페이지 ID
     """
+    if MOCK_MODE:
+        return _get_mock("get_product_list_by_page")
     with _client() as c:
         r = c.get(f"/v1/product/group/{product_page_id}", params={"publishStatus": "all"})
         return _safe_request(r)
