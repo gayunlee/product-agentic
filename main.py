@@ -13,7 +13,7 @@ from src.agent.product_agent import create_product_agent
 
 
 def main():
-    agent = create_product_agent()
+    agent, flow_guard = create_product_agent()
 
     print("=" * 60)
     print("어스플러스 상품 세팅 에이전트 (POC)")

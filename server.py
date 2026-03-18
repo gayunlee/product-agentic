@@ -20,12 +20,13 @@ app = FastAPI(title="상품 세팅 에이전트 POC")
 
 # 세션별 에이전트 (POC에서는 단일 세션)
 _agent = None
+_flow_guard = None
 
 
 def get_agent():
-    global _agent
+    global _agent, _flow_guard
     if _agent is None:
-        _agent = create_product_agent()
+        _agent, _flow_guard = create_product_agent()
     return _agent
 
 
@@ -41,16 +42,30 @@ class ChatResponse(BaseModel):
 async def chat(req: ChatRequest):
     agent = get_agent()
     try:
-        result = agent(req.message)
-        return ChatResponse(response=str(result))
+        # Phase 전환 명령어 처리
+        msg = req.message.strip()
+        if _flow_guard and msg.startswith("/phase "):
+            phase = msg.split("/phase ")[-1].strip()
+            _flow_guard.advance_to(phase)
+            return ChatResponse(response=f"Phase를 '{phase}'로 전환했습니다. 현재 수집된 데이터: {_flow_guard.collected_data}")
+
+        result = agent(msg)
+
+        # Phase 상태 + 수집 데이터를 응답에 포함
+        phase_info = ""
+        if _flow_guard:
+            phase_info = f"\n\n---\n📍 Phase: `{_flow_guard.current_phase}` | 데이터: {list(_flow_guard.collected_data.keys())}"
+
+        return ChatResponse(response=str(result) + phase_info)
     except Exception as e:
         return ChatResponse(response=f"오류 발생: {e}")
 
 
 @app.post("/reset")
 async def reset():
-    global _agent
+    global _agent, _flow_guard
     _agent = None
+    _flow_guard = None
     return {"status": "ok"}
 
 
