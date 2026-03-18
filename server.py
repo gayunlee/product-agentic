@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Langfuse 트레이싱 초기화
+from langfuse import get_client
+
+langfuse = get_client()
+if langfuse.auth_check():
+    print("Langfuse connected!")
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel

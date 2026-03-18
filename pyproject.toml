@@ -9,9 +9,10 @@ dependencies = [
     "httpx>=0.28.1",
     "python-dotenv>=1.2.2",
     "slack-sdk>=3.41.0",
-    "strands-agents>=1.30.0",
+    "strands-agents[otel]>=1.30.0",
     "strands-agents-tools>=0.2.22",
     "uvicorn>=0.42.0",
+    "langfuse>=4.0.0",
 ]
 
 [dependency-groups]
