@@ -11,6 +11,7 @@ from .admin_api import (
     update_product_display,
     update_product_sequence,
     update_main_product_setting,
+    get_product_page_list,
     get_product_page_detail,
     get_product_list_by_page,
 )

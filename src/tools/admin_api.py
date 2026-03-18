@@ -55,10 +55,17 @@ def _safe_request(r):
 
 
 @tool
-def get_master_groups() -> dict:
-    """마스터 그룹 목록을 조회합니다. 마스터 생성 시 masterGroupId가 필요합니다."""
+def get_master_groups(name: str = "") -> dict:
+    """마스터 그룹 목록을 조회합니다. name으로 검색 가능합니다.
+
+    Args:
+        name: 검색할 마스터 그룹명 (빈 문자열이면 전체 조회)
+    """
+    params = {"offset": 0, "limit": 100}
+    if name:
+        params["name"] = name
     with _client() as c:
-        r = c.get("/v1/master-groups", params={"offset": 0, "limit": 100})
+        r = c.get("/v1/master-groups", params=params)
         return _safe_request(r)
 
 
@@ -391,6 +398,18 @@ def update_main_product_setting(
 # ──────────────────────────────────────────────
 # Phase 5: 검증
 # ──────────────────────────────────────────────
+
+
+@tool
+def get_product_page_list(master_id: str) -> dict:
+    """마스터(오피셜클럽)의 상품 페이지 목록을 조회합니다. masterId는 cmsId를 사용합니다.
+
+    Args:
+        master_id: 마스터 cmsId (예: "136")
+    """
+    with _client() as c:
+        r = c.get("/v1/product-group", params={"masterId": master_id})
+        return _safe_request(r)
 
 
 @tool
