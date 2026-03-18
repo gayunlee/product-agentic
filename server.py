@@ -10,12 +10,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Langfuse 트레이싱 초기화
-from langfuse import get_client
+# Langfuse OTEL 트레이싱 초기화
+import os
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-langfuse = get_client()
-if langfuse.auth_check():
-    print("Langfuse connected!")
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
+
+exporter = OTLPSpanExporter(
+    endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
+    headers={
+        "x-langfuse-public-key": LANGFUSE_PUBLIC_KEY,
+        "x-langfuse-secret-key": LANGFUSE_SECRET_KEY,
+    },
+)
+
+from opentelemetry import trace
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(exporter))
+trace.set_tracer_provider(provider)
+print("Langfuse OTEL tracing initialized")
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse

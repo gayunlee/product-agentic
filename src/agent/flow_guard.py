@@ -114,10 +114,15 @@ class FlowGuard(HookProvider):
 
     def _after_tool_call(self, event: AfterToolCallEvent) -> None:
         tool_name = event.tool_use.get("name", "")
-        result = event.tool_result
+        tool_result = event.result
 
-        # 에러 응답이면 Phase 전환하지 않음
-        if isinstance(result, dict) and result.get("error"):
+        # 에러 상태면 Phase 전환하지 않음
+        if tool_result.get("status") == "error":
+            return
+
+        # ToolResult.content에서 실제 데이터 추출
+        result = self._extract_result(tool_result)
+        if result is None:
             return
 
         # Tool 호출 기록
@@ -128,6 +133,22 @@ class FlowGuard(HookProvider):
 
         # 자동 Phase 전환
         self._auto_advance()
+
+    @staticmethod
+    def _extract_result(tool_result) -> Any | None:
+        """ToolResult에서 실제 데이터를 추출합니다."""
+        import json
+        content = tool_result.get("content", [])
+        if not content:
+            return None
+        # content[0]에서 text를 가져와 JSON 파싱
+        first = content[0]
+        if isinstance(first, dict) and "text" in first:
+            try:
+                return json.loads(first["text"])
+            except (json.JSONDecodeError, TypeError):
+                return first["text"]
+        return None
 
     def _collect_data(self, tool_name: str, result: Any) -> None:
         """Tool 결과에서 다음 Phase에 필요한 데이터를 수집합니다."""
