@@ -1741,6 +1741,27 @@ otel = [
 ]
 
 [[package]]
+name = "strands-agents-evals"
+version = "0.1.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "boto3" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation-threading" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "strands-agents" },
+    { name = "strands-agents-tools" },
+    { name = "tenacity" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a5/e3/8f3c0f905332d38877e6c452c45e584b4d40b93f71a2bc400df4401b0a7b/strands_agents_evals-0.1.10.tar.gz", hash = "sha256:1674fa94d6508a036b002ac7fa26550a7eeec8c9896314e208c7704fe7ffc45e", size = 146712, upload-time = "2026-03-11T20:35:49.332Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/85/b311a1a4bfea33a3334e987ed018c7a05b2372f4b5ea592c9e2e5880b43e/strands_agents_evals-0.1.10-py3-none-any.whl", hash = "sha256:573179c982ad3b6a19b70dea09ba8fb78e5bd841a527b522da69904570104f7b", size = 127633, upload-time = "2026-03-11T20:35:47.956Z" },
+]
+
+[[package]]
 name = "strands-agents-tools"
 version = "0.2.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1851,6 +1872,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "slack-sdk" },
     { name = "strands-agents", extra = ["otel"] },
+    { name = "strands-agents-evals" },
     { name = "strands-agents-tools" },
     { name = "uvicorn" },
 ]
@@ -1868,6 +1890,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "slack-sdk", specifier = ">=3.41.0" },
     { name = "strands-agents", extras = ["otel"], specifier = ">=1.30.0" },
+    { name = "strands-agents-evals", specifier = ">=0.1.10" },
     { name = "strands-agents-tools", specifier = ">=0.2.22" },
     { name = "uvicorn", specifier = ">=0.42.0" },
 ]

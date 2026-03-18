@@ -13,6 +13,7 @@ dependencies = [
     "strands-agents-tools>=0.2.22",
     "uvicorn>=0.42.0",
     "langfuse>=4.0.0",
+    "strands-agents-evals>=0.1.10",
 ]
 
 [dependency-groups]
