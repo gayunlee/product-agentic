@@ -66,10 +66,54 @@ def get_agent():
 
 class ChatRequest(BaseModel):
     message: str
+    context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId? }
+
+
+class Button(BaseModel):
+    type: str  # "navigate" | "confirm" | "action"
+    label: str
+    url: str | None = None
+    actionId: str | None = None
 
 
 class ChatResponse(BaseModel):
     response: str
+    buttons: list[Button] = []
+    phase: str | None = None
+
+
+def _extract_buttons(text: str, phase: str, collected_data: dict) -> list[Button]:
+    """에이전트 응답에서 사이드패널 버튼을 생성."""
+    buttons = []
+    master_id = collected_data.get("master_cms_id", "")
+    page_id = collected_data.get("product_page_id", "")
+    page_code = collected_data.get("product_page_code", "")
+
+    if phase == "init" and "오피셜클럽" not in text.lower() and master_id:
+        # 마스터 확인됨 → 자동 진행
+        pass
+    elif phase == "init" and ("없" in text or "등록되어 있지" in text):
+        buttons.append(Button(type="navigate", label="🏠 오피셜클럽 생성하러 가기", url="/official-club/create"))
+        buttons.append(Button(type="confirm", label="✅ 오피셜클럽 생성 완료"))
+    elif phase == "series" and ("시리즈가 없" in text or "시리즈를 먼저" in text):
+        buttons.append(Button(type="navigate", label="📝 파트너센터로 이동"))
+        buttons.append(Button(type="confirm", label="✅ 시리즈 생성 완료"))
+    elif phase == "product_page" and page_id == "" and "생성" in text:
+        buttons.append(Button(type="navigate", label="📄 상품 페이지 생성하러 가기", url="/product/page/create"))
+        buttons.append(Button(type="confirm", label="✅ 상품 페이지 생성 완료"))
+    elif phase == "product_option" or (phase == "product_page" and page_id):
+        url = f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}"
+        buttons.append(Button(type="navigate", label="📦 상품 옵션 등록하러 가기", url=url))
+        buttons.append(Button(type="confirm", label="✅ 상품 옵션 등록 완료"))
+        buttons.append(Button(type="confirm", label="➕ 옵션 하나 더 등록"))
+    elif phase == "activation":
+        buttons.append(Button(type="action", label="🚀 활성화하기", actionId="activate"))
+    elif phase == "verification" and page_code:
+        buttons.append(Button(type="navigate", label="🖼️ 이미지 설정", url=f"/product/page/{page_id}?tab=settings"))
+        buttons.append(Button(type="navigate", label="⚠️ 유의사항 등록", url=f"/product/page/{page_id}?tab=caution"))
+        buttons.append(Button(type="navigate", label="🌐 고객 화면 확인", url=f"https://dev.us-insight.com/products/group/{page_code}"))
+
+    return buttons
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -81,16 +125,21 @@ async def chat(req: ChatRequest):
         if _flow_guard and msg.startswith("/phase "):
             phase = msg.split("/phase ")[-1].strip()
             _flow_guard.advance_to(phase)
-            return ChatResponse(response=f"Phase를 '{phase}'로 전환했습니다. 현재 수집된 데이터: {_flow_guard.collected_data}")
+            return ChatResponse(response=f"Phase를 '{phase}'로 전환했습니다.", phase=phase)
 
         result = agent(msg)
+
+        # 버튼 생성
+        current_phase = _flow_guard.current_phase if _flow_guard else "init"
+        collected = _flow_guard.collected_data if _flow_guard else {}
+        buttons = _extract_buttons(str(result), current_phase, collected)
 
         # Phase 상태 + 수집 데이터를 응답에 포함
         phase_info = ""
         if _flow_guard:
             phase_info = f"\n\n---\n📍 Phase: `{_flow_guard.current_phase}` | 데이터: {list(_flow_guard.collected_data.keys())}"
 
-        return ChatResponse(response=str(result) + phase_info)
+        return ChatResponse(response=str(result) + phase_info, buttons=buttons, phase=current_phase)
     except Exception as e:
         return ChatResponse(response=f"오류 발생: {e}")
 
