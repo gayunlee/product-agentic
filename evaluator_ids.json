@@ -1,0 +1,19 @@
+{
+  "Builtin.Correctness": "Builtin.Correctness",
+  "Builtin.Faithfulness": "Builtin.Faithfulness",
+  "Builtin.Helpfulness": "Builtin.Helpfulness",
+  "Builtin.ResponseRelevance": "Builtin.ResponseRelevance",
+  "Builtin.Conciseness": "Builtin.Conciseness",
+  "Builtin.Coherence": "Builtin.Coherence",
+  "Builtin.InstructionFollowing": "Builtin.InstructionFollowing",
+  "Builtin.Refusal": "Builtin.Refusal",
+  "Builtin.GoalSuccessRate": "Builtin.GoalSuccessRate",
+  "Builtin.ToolSelectionAccuracy": "Builtin.ToolSelectionAccuracy",
+  "Builtin.ToolParameterAccuracy": "Builtin.ToolParameterAccuracy",
+  "Builtin.Harmfulness": "Builtin.Harmfulness",
+  "Builtin.Stereotyping": "Builtin.Stereotyping",
+  "diagnostic_accuracy": "diagnostic_accuracy-H3x3hw5PrD",
+  "permission_compliance": "permission_compliance-1ZAFWO4djV",
+  "prerequisite_compliance": "prerequisite_compliance-QShS2OA0Vz",
+  "scope_compliance": "scope_compliance-uAje0Y7wLz"
+}
