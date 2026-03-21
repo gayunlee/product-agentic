@@ -43,6 +43,7 @@ else:
     print("⚠️  Langfuse 키 없음. 트레이싱 없이 실행합니다.")
 
 from src.agent.product_agent import create_product_agent
+from server import _extract_buttons
 
 
 # ──────────────────────────────────────────────
@@ -146,6 +147,13 @@ def run_scenario(scenario: dict) -> dict:
     actual_tools = [t["tool"] for t in guard.tool_history if "tool" in t]
     print(f"  Tool 호출: {actual_tools}")
 
+    # 사이드패널 buttons 생성 (마지막 응답 기준)
+    last_output = results[-1]["output"] if results and results[-1].get("output") else ""
+    buttons = _extract_buttons(last_output, guard.current_phase, dict(guard.collected_data))
+    button_data = [{"type": b.type, "label": b.label, "url": b.url, "actionId": b.actionId} for b in buttons]
+    if button_data:
+        print(f"  Buttons: {[b['label'] for b in button_data]}")
+
     return {
         "scenario": scenario["name"],
         "category": scenario["category"],
@@ -156,6 +164,7 @@ def run_scenario(scenario: dict) -> dict:
         "actual_tools": actual_tools,
         "expected_tools": scenario["expected_tools"],
         "forbidden_tools": scenario.get("forbidden_tools", []),
+        "buttons": button_data,
     }
 
 
@@ -186,6 +195,21 @@ def evaluate_result(result: dict) -> dict:
     # 5. cmsId 사용 여부
     cms_id_used = "master_cms_id" in result.get("collected_data", {})
 
+    # 6. buttons 검증 (사이드패널 시나리오)
+    buttons = result.get("buttons", [])
+    buttons_valid = True
+    button_issues = []
+    for btn in buttons:
+        if btn["type"] == "navigate" and not btn.get("url"):
+            buttons_valid = False
+            button_issues.append(f"navigate 버튼 '{btn['label']}'에 url 없음")
+        if btn["type"] == "action" and not btn.get("actionId"):
+            buttons_valid = False
+            button_issues.append(f"action 버튼 '{btn['label']}'에 actionId 없음")
+        if btn["type"] == "navigate" and btn.get("url") and not btn["url"].startswith("/") and not btn["url"].startswith("http"):
+            buttons_valid = False
+            button_issues.append(f"navigate 버튼 '{btn['label']}'의 url이 유효하지 않음: {btn['url']}")
+
     # 종합 pass/fail
     passed = (
         coverage >= 0.8
@@ -203,6 +227,9 @@ def evaluate_result(result: dict) -> dict:
         "no_violations": no_violations,
         "violations": violations,
         "cms_id_used": cms_id_used,
+        "buttons_valid": buttons_valid,
+        "button_count": len(buttons),
+        "button_issues": button_issues,
         "actual_tools": actual,
         "expected_tools": expected,
         "forbidden_tools": forbidden,
@@ -281,6 +308,10 @@ def main():
             print(f"  ⛔ 금지 Tool 위반: {ev['violations']}")
         if ev["unnecessary_tools"]:
             print(f"  ⚠️  불필요: {ev['unnecessary_tools']}")
+        if ev.get("button_count", 0) > 0:
+            print(f"  🔘 Buttons: {ev['button_count']}개 {'✅' if ev['buttons_valid'] else '❌'}")
+        if ev.get("button_issues"):
+            print(f"  ⛔ Button 이슈: {ev['button_issues']}")
 
     # 종합
     print(f"\n{'='*60}")
