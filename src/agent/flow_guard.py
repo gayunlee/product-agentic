@@ -51,6 +51,9 @@ PHASE_TOOLS: dict[str, list[str]] = {
         # 조회는 허용
         "get_product_page_detail",
         "get_product_list_by_page",
+        "get_master_detail",
+        "search_masters",
+        "get_product_page_list",
     ],
     "verification": [
         "get_product_page_detail",
@@ -58,6 +61,7 @@ PHASE_TOOLS: dict[str, list[str]] = {
         "get_product_page_list",
         "search_masters",
         "get_master_detail",
+        "verify_product_setup",
     ],
 }
 
@@ -80,7 +84,7 @@ PHASE_TRANSITIONS: dict[str, dict[str, str]] = {
         "create_product": "product_option",  # 여러 옵션 등록 가능
     },
     "activation": {
-        "update_main_product_setting": "verification",  # 마지막 활성화 후 검증
+        # verification 전환은 _auto_advance에서 Self-Verification 조건으로 처리
     },
 }
 
@@ -96,6 +100,7 @@ class FlowGuard(HookProvider):
         self.current_phase = "init"
         self.collected_data: dict[str, Any] = {}
         self.tool_history: list[dict] = []
+        self._recent_tools: list[str] = []  # Loop Detection용
 
     def register_hooks(self, registry: HookRegistry, **kwargs) -> None:
         registry.add_callback(BeforeToolCallEvent, self._before_tool_call)
@@ -105,11 +110,30 @@ class FlowGuard(HookProvider):
         tool_name = event.tool_use.get("name", "")
         allowed = PHASE_TOOLS.get(self.current_phase, [])
 
+        # Phase 제한 체크
         if tool_name not in allowed:
             event.cancel_tool = (
                 f"[FlowGuard] '{tool_name}' Tool은 현재 Phase '{self.current_phase}'에서 사용할 수 없습니다. "
                 f"현재 Phase에서 사용 가능한 Tool: {allowed}. "
                 f"현재까지 수집된 데이터: {self.collected_data}"
+            )
+            return
+
+        # Loop Detection: 같은 Tool 3회 이상 연속 호출 감지
+        self._recent_tools.append(tool_name)
+        if len(self._recent_tools) > 5:
+            self._recent_tools.pop(0)
+        consecutive = 0
+        for t in reversed(self._recent_tools):
+            if t == tool_name:
+                consecutive += 1
+            else:
+                break
+        if consecutive >= 3:
+            event.cancel_tool = (
+                f"[FlowGuard] '{tool_name}'을 {consecutive}회 연속 호출하고 있습니다. "
+                f"같은 도구를 반복 호출해도 결과가 달라지지 않습니다. "
+                f"다른 접근 방법을 시도하거나, 수집된 데이터를 확인하세요: {self.collected_data}"
             )
 
     def _after_tool_call(self, event: AfterToolCallEvent) -> None:
@@ -192,6 +216,9 @@ class FlowGuard(HookProvider):
             self.current_phase = "product_option"
         elif self.current_phase == "product_option" and self.can_advance_to_activation():
             self.current_phase = "activation"
+        # Self-Verification: activation → verification 전환 시 조회 이력 필수
+        elif self.current_phase == "activation" and self._has_verification_query():
+            self.current_phase = "verification"
 
         if self.current_phase != prev:
             self.tool_history.append({"phase_transition": f"{prev} → {self.current_phase}"})
@@ -212,3 +239,9 @@ class FlowGuard(HookProvider):
 
     def can_advance_to_activation(self) -> bool:
         return "product_ids" in self.collected_data and len(self.collected_data["product_ids"]) > 0
+
+    def _has_verification_query(self) -> bool:
+        """Self-Verification: activation phase에서 검증 조회를 수행했는지 확인."""
+        verification_tools = {"get_product_page_detail", "get_product_list_by_page"}
+        activation_tools = [h["tool"] for h in self.tool_history if h.get("phase") == "activation"]
+        return bool(verification_tools & set(activation_tools))

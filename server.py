@@ -101,6 +101,7 @@ async def index():
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>상품 세팅 에이전트</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; height: 100vh; display: flex; flex-direction: column; }
@@ -113,6 +114,14 @@ header h1 { font-size: 18px; font-weight: 600; }
 .msg.user { align-self: flex-end; background: #1a1a2e; color: white; border-bottom-right-radius: 4px; }
 .msg.agent { align-self: flex-start; background: white; color: #333; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
 .msg.agent a { color: #0066cc; }
+.msg.agent h1,.msg.agent h2,.msg.agent h3 { margin: 8px 0 4px; font-size: 15px; }
+.msg.agent ul,.msg.agent ol { margin: 4px 0; padding-left: 20px; }
+.msg.agent code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+.msg.agent pre { background: #f0f0f0; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.msg.agent pre code { background: none; padding: 0; }
+.msg.agent table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.msg.agent th,.msg.agent td { border: 1px solid #ddd; padding: 4px 8px; }
+.msg.agent th { background: #f5f5f5; }
 .msg.system { align-self: center; background: #e8e8e8; color: #666; font-size: 12px; border-radius: 20px; padding: 6px 16px; }
 #input-area { padding: 16px 24px; background: white; border-top: 1px solid #e0e0e0; display: flex; gap: 12px; }
 #msg-input { flex: 1; padding: 12px 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
@@ -142,20 +151,27 @@ const container = document.getElementById('chat-container');
 const input = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
 
-input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
 
 function addMsg(text, cls) {
   const div = document.createElement('div');
   div.className = 'msg ' + cls;
-  div.innerHTML = text.replace(/https?:\\/\\/[^\\s)]+/g, url => `<a href="${url}" target="_blank">${url}</a>`);
+  if (cls.includes('agent') && !cls.includes('loading') && typeof marked !== 'undefined') {
+    div.innerHTML = marked.parse(text);
+  } else {
+    div.innerHTML = text.replace(/https?:\\/\\/[^\\s)]+/g, url => `<a href="${url}" target="_blank">${url}</a>`);
+  }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
   return div;
 }
 
+let sending = false;
 async function send() {
+  if (sending) return;
   const text = input.value.trim();
   if (!text) return;
+  sending = true;
   input.value = '';
   addMsg(text, 'user');
   sendBtn.disabled = true;
@@ -174,6 +190,7 @@ async function send() {
     addMsg('오류가 발생했습니다: ' + e.message, 'system');
   }
   sendBtn.disabled = false;
+  sending = false;
   input.focus();
 }
 

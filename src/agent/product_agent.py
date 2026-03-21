@@ -27,6 +27,7 @@ from src.tools import (
     get_product_page_list,
     get_product_page_detail,
     get_product_list_by_page,
+    verify_product_setup,
 )
 from .system_prompt import SYSTEM_PROMPT
 from .flow_guard import FlowGuard
@@ -74,6 +75,7 @@ def create_product_agent(session_id: str | None = None) -> tuple[Agent, FlowGuar
             get_product_page_list,
             get_product_page_detail,
             get_product_list_by_page,
+            verify_product_setup,
         ],
     )
 

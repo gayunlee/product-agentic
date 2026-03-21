@@ -7,6 +7,7 @@
 
 import os
 import httpx
+import requests
 from strands import tool
 
 ADMIN_BASE = os.environ.get("ADMIN_API_BASE_URL", "")
@@ -15,18 +16,18 @@ PARTNER_BASE = os.environ.get("PARTNER_API_BASE_URL", "")
 PARTNER_TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
 PLACEHOLDER_IMAGE = "https://placehold.co/990x1100/e8e8e8/999?text=PLACEHOLDER"
 MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
+EXPLORER_AGENT_URL = os.environ.get("EXPLORER_AGENT_URL", "http://localhost:8001")
 
 # Mock 응답 데이터
 MOCK_RESPONSES = {
     "get_master_groups": {"masterGroups": [
-        {"id": "group_001", "name": "테스트 마스터 그룹", "masterCount": 1},
-        {"id": "group_002", "name": "김영익", "masterCount": 1},
+        {"id": "69b37159193f23cd69de4df7", "name": "조조형우의 클럽", "masterCount": 1},
     ]},
     "search_masters": [
-        {"id": "mock_master_001", "cmsId": "100", "name": "김영익", "createdAt": "2026-03-17", "publicType": "PUBLIC", "masterGroupId": "group_002", "masterGroupName": "김영익"},
+        {"id": "673301e25aa67ba37f477759", "cmsId": "35", "name": "조조형우", "createdAt": "2024-11-12", "publicType": "PUBLIC", "masterGroupId": "69b37159193f23cd69de4df7", "masterGroupName": "조조형우의 클럽"},
     ],
-    "get_master_detail": {"cmsId": "100", "name": "김영익", "displayName": "김영익", "clubPublicType": "PUBLIC", "clubName": "김영익의 투자클럽"},
-    "get_series_list": {"masters": [{"_id": "mock_master_001", "name": "김영익", "series": [
+    "get_master_detail": {"cmsId": "35", "name": "조조형우", "displayName": "조조형우", "clubPublicType": "PUBLIC", "clubName": "조조형우", "productGroupViewStatus": "ACTIVE", "masterDisplayIndex": 10},
+    "get_series_list": {"masters": [{"_id": "673301e25aa67ba37f477759", "name": "조조형우", "series": [
         {"_id": "mock_series_001", "title": "투자 기초 시리즈"},
         {"_id": "mock_series_002", "title": "경제 분석 리포트"},
     ]}]},
@@ -34,14 +35,14 @@ MOCK_RESPONSES = {
     "create_series": {"content": {"id": "mock_series_new", "cmsId": "300"}},
     "get_product_page_list": [],  # 첫 조회는 빈 목록
     "create_product_page": {"success": True, "status": 201},
-    "get_product_page_list_after": [{"id": "mock_page_001", "title": "테스트 상품 페이지", "status": "INACTIVE", "code": 999, "isAlwaysPublic": True, "isAlwaysApply": True, "startAt": "1970.01.01", "endAt": "9999.12.31", "applyStartAt": "1970-01-01", "applyEndAt": "9999-12-31", "createdAt": "2026-03-18", "isDeletable": True}],
+    "get_product_page_list_after": [{"id": "mock_page_001", "title": "월간 투자 리포트 페이지", "status": "INACTIVE", "code": 148, "isAlwaysPublic": True, "isAlwaysApply": True, "startAt": "1970.01.01", "endAt": "9999.12.31", "applyStartAt": "1970-01-01", "applyEndAt": "9999-12-31", "createdAt": "2026-03-18", "isDeletable": True}],
     "create_product": {"id": 99999},
     "update_product_display": {"success": True, "status": 200},
     "update_product_sequence": {"success": True, "status": 200},
     "update_product_page_status": {"success": True, "status": 200},
     "update_main_product_setting": {"success": True, "status": 200},
-    "get_product_page_detail": {"id": "mock_page_001", "masterId": "100", "title": "테스트 상품 페이지", "status": "INACTIVE", "type": "SUBSCRIPTION", "code": 999, "isAlwaysPublic": True, "isChangeable": True, "mainContents": [{"type": "IMAGE", "contentUrl": PLACEHOLDER_IMAGE}], "contents": [{"imageUrl": PLACEHOLDER_IMAGE, "sequence": 0}]},
-    "get_product_list_by_page": [{"productId": "99999", "name": "월간 구독", "price": 29900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": True, "viewSequence": 0}],
+    "get_product_page_detail": {"id": "mock_page_001", "masterId": "35", "title": "월간 투자 리포트 페이지", "status": "ACTIVE", "type": "SUBSCRIPTION", "code": 148, "isAlwaysPublic": True, "isChangeable": True, "mainContents": [{"type": "IMAGE", "contentUrl": PLACEHOLDER_IMAGE}], "contents": [{"imageUrl": PLACEHOLDER_IMAGE, "sequence": 0}]},
+    "get_product_list_by_page": [{"productId": "99999", "name": "월간 투자 리포트", "price": 29900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": True, "viewSequence": 0}],
 }
 
 # product_page_list 호출 카운터 (첫 번째는 빈 목록, 두 번째부터 결과 반환)
@@ -76,9 +77,9 @@ def _partner_client() -> httpx.Client:
 
 
 def _safe_request(r):
-    """API 응답 처리. 에러 시 상세 정보를 에이전트에 반환합니다."""
+    """API 응답 처리. 에러 시 상세 정보 + 해결 가이드를 에이전트에 반환합니다."""
     if r.status_code >= 400:
-        return {
+        error = {
             "error": True,
             "status": r.status_code,
             "url": str(r.url),
@@ -86,6 +87,19 @@ def _safe_request(r):
             "response_body": r.text[:1000],
             "request_body": r.request.content.decode()[:1000] if r.request.content else "",
         }
+        # 에러 패턴별 해결 가이드 (OpenAI 린트 오류에 수정 지침 패턴)
+        body = r.text.lower()
+        if r.status_code == 401:
+            error["guide"] = "인증 토큰이 만료되었습니다. 토큰 갱신이 필요합니다."
+        elif "존재하지 않는 마스터" in body or "master not found" in body:
+            error["guide"] = "masterId에 cmsId를 사용하세요 (MongoDB ObjectId가 아닌 cmsId='35' 형태). search_masters의 결과에서 cmsId를 확인하세요."
+        elif "상시 공개 상품 페이지가 이미 존재" in body or "already exists" in body:
+            error["guide"] = "이 마스터에 상시공개 상품 페이지가 이미 있습니다. get_product_page_list로 기존 페이지를 확인하세요."
+        elif "contentids" in body or "contentids는 필수" in body:
+            error["guide"] = "contentIds가 비어있습니다. get_series_list로 시리즈를 먼저 확인하고 contentIds에 시리즈 ID를 넣으세요."
+        elif "productgroupid" in body:
+            error["guide"] = "productGroupId가 잘못되었습니다. get_product_page_list로 상품 페이지 ID를 확인하세요."
+        return error
     # 201 Created 등 body가 비어있는 경우
     if not r.text.strip():
         return {"success": True, "status": r.status_code}
@@ -99,10 +113,15 @@ def _safe_request(r):
 
 @tool
 def get_master_groups(name: str = "") -> dict:
-    """마스터 그룹 목록을 조회합니다. name으로 검색 가능합니다.
+    """마스터 그룹 목록을 조회합니다. 마스터 그룹은 오피셜클럽의 상위 개념입니다.
+
+    ⚠️ 마스터 그룹 ≠ 오피셜클럽. 오피셜클럽 검색은 search_masters를 사용하세요.
+    ⚠️ 상품 페이지 생성에는 오피셜클럽의 cmsId가 필요합니다 (마스터 그룹 id가 아님).
 
     Args:
         name: 검색할 마스터 그룹명 (빈 문자열이면 전체 조회)
+
+    예시: get_master_groups(name="조조형우")
     """
     if MOCK_MODE:
         return _get_mock("get_master_groups")
@@ -130,14 +149,21 @@ def create_master_group(name: str) -> dict:
 
 @tool
 def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
-    """마스터(오피셜클럽) 목록을 검색합니다. 결과의 cmsId를 다른 API의 masterId로 사용해야 합니다 (id가 아닌 cmsId).
+    """오피셜클럽(마스터) 목록을 검색합니다. 상품 세팅의 첫 단계.
+
+    ⚠️ 중요: 결과의 cmsId를 다른 모든 API의 masterId로 사용해야 합니다.
+       id(MongoDB ObjectId)가 아닌 cmsId("1", "35", "136" 등)를 사용하세요.
+    ⚠️ 마스터 그룹과 다릅니다. 마스터 그룹 검색은 get_master_groups를 사용하세요.
 
     Args:
-        search_keyword: 검색어 (마스터 이름)
+        search_keyword: 검색어 (마스터/오피셜클럽 이름)
         public_type: 공개 상태 필터 (ALL, PUBLIC, PENDING, PRIVATE)
 
     Returns:
-        마스터 목록. 각 항목의 cmsId를 masterId로 사용. 예: cmsId="1" → masterId="1"
+        마스터 목록. 각 항목: {id, cmsId, name, publicType, masterGroupId, masterGroupName}
+        cmsId를 masterId로 사용. 예: cmsId="35" → create_product_page(master_id="35")
+
+    예시: search_masters(search_keyword="조조형우")
     """
     if MOCK_MODE:
         return _get_mock("search_masters")
@@ -168,10 +194,17 @@ def get_master_detail(master_id: str) -> dict:
 
 @tool
 def get_series_list(master_id: str) -> dict:
-    """마스터의 시리즈 목록을 조회합니다. 상품 옵션 생성 시 contentIds로 사용됩니다.
+    """마스터의 시리즈 목록을 조회합니다. 상품 옵션(create_product)의 contentIds에 필수.
+
+    ⚠️ 선행조건: search_masters로 마스터 존재를 먼저 확인해야 합니다.
+    ⚠️ 시리즈가 없으면 상품 옵션을 만들 수 없습니다 (contentIds 빈 배열 불가).
+       시리즈가 없으면 create_series로 먼저 생성하세요.
+    ⚠️ master_id는 반드시 cmsId를 사용하세요.
 
     Args:
-        master_id: 마스터 ID
+        master_id: 마스터 cmsId (예: "35", "136")
+
+    예시: get_series_list(master_id="35")
     """
     if MOCK_MODE:
         return _get_mock("get_series_list")
@@ -234,8 +267,15 @@ def create_product_page(
 ) -> dict:
     """상품 페이지를 생성합니다. 플레이스홀더 이미지가 자동으로 포함됩니다.
 
+    ⚠️ 선행조건: search_masters로 마스터 확인 + get_series_list로 시리즈 확인 완료 후 호출.
+    ⚠️ master_id는 반드시 cmsId를 사용하세요 (MongoDB ObjectId 아님).
+    ⚠️ 구독/단건 분기:
+       - 구독: product_type="SUBSCRIPTION", is_changeable 선택 가능
+       - 단건: product_type="ONE_TIME_PURCHASE", is_changeable=False 고정
+    ⚠️ 상시공개 페이지는 마스터당 1개만 가능. 이미 있으면 400 에러.
+
     Args:
-        master_id: 마스터 ID
+        master_id: 마스터 cmsId (예: "35")
         title: 페이지명 (관리자용, 고객 미노출)
         product_type: 상품 타입 (SUBSCRIPTION 또는 ONE_TIME_PURCHASE)
         is_hidden: 히든 처리 여부
@@ -311,10 +351,17 @@ def create_product(
     promo_end_at: str = "",
     is_always_promotion: bool = False,
 ) -> dict:
-    """상품 옵션을 등록합니다.
+    """상품 옵션을 등록합니다. 고객이 실제로 구매하는 단위.
+
+    ⚠️ 선행조건: create_product_page로 상품 페이지 생성 + get_series_list로 시리즈 확인 완료 후 호출.
+    ⚠️ contentIds는 필수이며 빈 배열 불가. 반드시 get_series_list로 시리즈를 먼저 확인하세요.
+    ⚠️ 구독/단건 분기 (중요!):
+       - 구독: paymentPeriod 사용 (ONE_MONTH 등). usagePeriodType 사용 금지.
+       - 단건: usagePeriodType + useDuration 사용. paymentPeriod 사용 금지.
+    ⚠️ 단건 프로모션: REGULAR_DISCOUNT(상시 할인)만 가능. SUBSCRIPTION_COUNT_DISCOUNT 사용 금지.
 
     Args:
-        product_group_id: 상품 페이지 ID (create_product_page에서 받은 ID)
+        product_group_id: 상품 페이지 ID (get_product_page_list에서 확인한 ID)
         name: 상품명 (고객 노출)
         origin_price: 정상가 (원)
         content_ids: 포함할 시리즈 ID 배열
@@ -444,8 +491,12 @@ def update_main_product_setting(
 ) -> dict:
     """메인 상품 페이지 설정을 변경합니다. 이 설정이 ACTIVE여야 고객에게 상품이 노출됩니다.
 
+    ⚠️ 선행조건: update_product_page_status로 상품 페이지를 ACTIVE로 변경한 후 호출.
+    ⚠️ 활성화 순서: update_product_display → update_product_sequence → update_product_page_status → 이 Tool.
+    ⚠️ 2레벨 노출: 마스터 공개(PUBLIC) + 이 설정(ACTIVE) 둘 다 충족해야 고객에게 보임.
+
     Args:
-        master_id: 마스터 ID
+        master_id: 마스터 cmsId (예: "35")
         view_status: 노출 상태 (ACTIVE, INACTIVE, EXCLUDED)
         product_group_type: 상품 그룹 타입 (US_PLUS 또는 US_CAMPUS)
     """
@@ -507,3 +558,68 @@ def get_product_list_by_page(product_page_id: str) -> dict:
     with _client() as c:
         r = c.get(f"/v1/product/group/{product_page_id}", params={"publishStatus": "all"})
         return _safe_request(r)
+
+
+# ──────────────────────────────────────────────
+# Phase 5: 탐색 에이전트에 검증 요청
+# ──────────────────────────────────────────────
+
+
+@tool
+def verify_product_setup(
+    product_group_code: int,
+    master_id: str,
+    master_display_index: int,
+    master_name: str,
+    product_name: str = "",
+    price: int = 0,
+    product_count: int = 0,
+) -> dict:
+    """상품 세팅 완료 후 탐색 에이전트에 검증을 요청합니다.
+
+    탐색 에이전트가 구독 탭 노출 여부, 상품 페이지 내용을 검증합니다.
+    Phase 4(활성화) 완료 후에 호출해야 합니다.
+
+    Args:
+        product_group_code: 상품 페이지 코드 (예: 148)
+        master_id: 마스터 cmsId (예: "35")
+        master_display_index: ACTIVE 마스터 중 노출 순서 (1-based)
+        master_name: 오피셜클럽 이름 (예: "조조형우")
+        product_name: 상품명 (선택)
+        price: 금액 (선택)
+        product_count: 상품 옵션 수 (선택)
+    """
+    expected = {
+        "masterDisplayIndex": master_display_index,
+        "productGroupViewStatus": "ACTIVE",
+        "masterName": master_name,
+    }
+    if product_name:
+        expected["productName"] = product_name
+    if price:
+        expected["price"] = price
+    if product_count:
+        expected["productCount"] = product_count
+
+    try:
+        resp = requests.post(
+            f"{EXPLORER_AGENT_URL}/verify",
+            json={
+                "type": "product_page",
+                "target": {
+                    "productGroupCode": product_group_code,
+                    "masterId": master_id,
+                },
+                "expected": expected,
+                "level": "full",
+            },
+            timeout=120,
+        )
+        return resp.json()
+    except requests.ConnectionError:
+        return {
+            "status": "error",
+            "summary": f"탐색 에이전트({EXPLORER_AGENT_URL})에 연결할 수 없습니다. 서버가 실행 중인지 확인하세요.",
+        }
+    except Exception as e:
+        return {"status": "error", "summary": f"검증 요청 실패: {e}"}
