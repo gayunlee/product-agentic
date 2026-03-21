@@ -49,14 +49,33 @@ MOCK_RESPONSES = {
 _product_page_list_call_count = 0
 
 
-def _get_mock(tool_name: str) -> dict | list:
-    """Mock 응답을 반환합니다."""
+def _get_mock(tool_name: str, **kwargs) -> dict | list:
+    """Mock 응답을 반환합니다. 검색어에 따라 분기."""
     global _product_page_list_call_count
+
     if tool_name == "get_product_page_list":
         _product_page_list_call_count += 1
         if _product_page_list_call_count <= 1:
             return MOCK_RESPONSES["get_product_page_list"]
         return MOCK_RESPONSES["get_product_page_list_after"]
+
+    # 검색어 기반 분기 (마스터 검색)
+    keyword = kwargs.get("keyword", "")
+    if tool_name == "search_masters" and keyword:
+        if "조조형우" in keyword:
+            return MOCK_RESPONSES["search_masters"]
+        elif "김영익" in keyword:
+            return [{"id": "mock_kim_001", "cmsId": "100", "name": "김영익", "createdAt": "2023-11-21", "publicType": "PUBLIC", "masterGroupId": "mock_group_kim", "masterGroupName": "김영익"}]
+        else:
+            return []  # 그 외 → 빈 결과 (마스터 없음)
+    if tool_name == "get_master_groups" and keyword:
+        if "조조형우" in keyword:
+            return MOCK_RESPONSES["get_master_groups"]
+        elif "김영익" in keyword:
+            return {"masterGroups": [{"id": "mock_group_kim", "name": "김영익", "masterCount": 1}]}
+        else:
+            return {"masterGroups": []}  # 그 외 → 빈 결과
+
     return MOCK_RESPONSES.get(tool_name, {"mock": True, "tool": tool_name})
 
 
@@ -124,7 +143,7 @@ def get_master_groups(name: str = "") -> dict:
     예시: get_master_groups(name="조조형우")
     """
     if MOCK_MODE:
-        return _get_mock("get_master_groups")
+        return _get_mock("get_master_groups", keyword=name)
     params = {"offset": 0, "limit": 100}
     if name:
         params["name"] = name
@@ -166,7 +185,7 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
     예시: search_masters(search_keyword="조조형우")
     """
     if MOCK_MODE:
-        return _get_mock("search_masters")
+        return _get_mock("search_masters", keyword=search_keyword)
     params = {}
     if search_keyword:
         params["searchKeyword"] = search_keyword
