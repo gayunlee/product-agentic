@@ -1,10 +1,11 @@
 """
 에이전트 평가 시나리오.
 mock 모드로 여러 시나리오를 실행하고 Langfuse에 trace를 쌓은 뒤,
-strands-evals로 Tool 호출 순서/파라미터를 자동 평가.
+Tool 호출 순서/파라미터를 자동 평가.
 
 Usage:
     MOCK_MODE=true uv run python eval_scenarios.py
+    MOCK_MODE=true uv run python eval_scenarios.py --scenario S001
 """
 
 from dotenv import load_dotenv
@@ -12,73 +13,101 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import sys
 import json
+import base64
+import re
+from pathlib import Path
 
-# OTEL 초기화 (Langfuse 연결)
+# OTEL 초기화 (Langfuse Basic Auth)
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry import trace
 
-LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "")
-exporter = OTLPSpanExporter(
-    endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
-    headers={
-        "x-langfuse-public-key": os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
-        "x-langfuse-secret-key": os.environ.get("LANGFUSE_SECRET_KEY", ""),
-    },
-)
-provider = TracerProvider()
-provider.add_span_processor(SimpleSpanProcessor(exporter))
-trace.set_tracer_provider(provider)
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", os.environ.get("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")).strip('"')
+LANGFUSE_PK = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip('"')
+LANGFUSE_SK = os.environ.get("LANGFUSE_SECRET_KEY", "").strip('"')
+
+if LANGFUSE_PK and LANGFUSE_SK:
+    _auth = base64.b64encode(f"{LANGFUSE_PK}:{LANGFUSE_SK}".encode()).decode()
+    exporter = OTLPSpanExporter(
+        endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
+        headers={"Authorization": f"Basic {_auth}"},
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    print(f"✅ Langfuse OTEL 연결: {LANGFUSE_HOST}")
+else:
+    print("⚠️  Langfuse 키 없음. 트레이싱 없이 실행합니다.")
 
 from src.agent.product_agent import create_product_agent
 
 
 # ──────────────────────────────────────────────
-# 시나리오 정의
+# 시나리오 로드 (scenarios/ 폴더에서)
 # ──────────────────────────────────────────────
 
-SCENARIOS = [
-    {
-        "name": "구독상품 전체 세팅",
-        "session_id": "eval-subscription-full",
-        "messages": [
-            "김영익 마스터로 구독상품 세팅해줘. 상품명은 '월간 투자 리포트', 금액 29900원, 1개월 결제주기, 시리즈는 있는거 다 포함해줘. 상품 구성은 '투자 기초 시리즈 이용권'으로.",
-        ],
-        "expected_tools": [
-            "search_masters",
-            "get_master_groups",
-            "get_series_list",
-            "get_product_page_list",
-            "create_product_page",
-            "get_product_page_list",
-            "create_product",
-        ],
-    },
-    {
-        "name": "마스터 단순 조회",
-        "session_id": "eval-master-lookup",
-        "messages": [
-            "김영익 마스터 있는지 확인해줘",
-        ],
-        "expected_tools": [
-            "search_masters",
-            "get_master_groups",
-        ],
-    },
-    {
-        "name": "없는 마스터 검색",
-        "session_id": "eval-master-not-found",
-        "messages": [
-            "아무개 마스터 있어?",
-        ],
-        "expected_tools": [
-            "search_masters",
-            "get_master_groups",
-        ],
-    },
-]
+def load_scenarios_from_files() -> list[dict]:
+    """scenarios/ 폴더의 .md 파일에서 시나리오를 파싱."""
+    scenarios = []
+    scenarios_dir = Path(__file__).parent / "scenarios"
+
+    for category_dir in sorted(scenarios_dir.iterdir()):
+        if not category_dir.is_dir():
+            continue
+        for md_file in sorted(category_dir.glob("S*.md")):
+            scenario = parse_scenario_file(md_file, category_dir.name)
+            if scenario:
+                scenarios.append(scenario)
+
+    return scenarios
+
+
+def parse_scenario_file(path: Path, category: str) -> dict | None:
+    """시나리오 .md 파일에서 핵심 정보를 추출."""
+    text = path.read_text(encoding="utf-8")
+
+    # 시나리오 ID 추출 (파일명에서)
+    scenario_id = path.stem  # S001_구독상품_전체_세팅
+
+    # 사용자 입력 추출
+    input_match = re.search(r'## 사용자 입력\s*\n+>\s*"(.+?)"', text)
+    if not input_match:
+        # 변형이 여러 개인 경우 (S200 탈옥)
+        input_match = re.search(r'> 변형 1:\s*"(.+?)"', text)
+    if not input_match:
+        print(f"  ⚠️ {path.name}: 사용자 입력 파싱 실패")
+        return None
+
+    user_input = input_match.group(1)
+
+    # required_tools 추출 (strands-evals Case 블록에서)
+    tools_match = re.search(r'"required_tools":\s*\[([^\]]*)\]', text)
+    required_tools = []
+    if tools_match:
+        required_tools = [t.strip().strip('"').strip("'") for t in tools_match.group(1).split(",") if t.strip()]
+
+    # forbidden_tools 추출
+    forbidden_match = re.search(r'"forbidden_tools":\s*\[([^\]]*)\]', text)
+    forbidden_tools = []
+    if forbidden_match:
+        forbidden_tools = [t.strip().strip('"').strip("'") for t in forbidden_match.group(1).split(",") if t.strip()]
+
+    # 난이도 추출
+    difficulty_match = re.search(r'\*\*난이도\*\*:\s*(\w+)', text)
+    difficulty = difficulty_match.group(1) if difficulty_match else "medium"
+
+    return {
+        "name": scenario_id,
+        "category": category,
+        "session_id": f"eval-{scenario_id}",
+        "messages": [user_input],
+        "expected_tools": required_tools,
+        "forbidden_tools": forbidden_tools,
+        "difficulty": difficulty,
+    }
 
 
 # ──────────────────────────────────────────────
@@ -88,19 +117,19 @@ SCENARIOS = [
 def run_scenario(scenario: dict) -> dict:
     """시나리오를 실행하고 결과를 반환."""
     print(f"\n{'='*60}")
-    print(f"시나리오: {scenario['name']}")
+    print(f"🧪 [{scenario['category']}] {scenario['name']}")
+    print(f"   입력: \"{scenario['messages'][0][:60]}...\"")
     print(f"{'='*60}")
 
     agent, guard = create_product_agent(session_id=scenario["session_id"])
 
     results = []
     for msg in scenario["messages"]:
-        print(f"\n>> {msg}")
         try:
             response = agent(msg)
             results.append({
                 "input": msg,
-                "output": str(response),
+                "output": str(response)[:500],
                 "phase": guard.current_phase,
                 "collected_data": dict(guard.collected_data),
                 "tool_history": list(guard.tool_history),
@@ -112,16 +141,21 @@ def run_scenario(scenario: dict) -> dict:
                 "output": None,
                 "error": str(e),
             })
-            print(f"에러: {e}")
+            print(f"  ❌ 에러: {e}")
+
+    actual_tools = [t["tool"] for t in guard.tool_history if "tool" in t]
+    print(f"  Tool 호출: {actual_tools}")
 
     return {
         "scenario": scenario["name"],
+        "category": scenario["category"],
         "results": results,
         "final_phase": guard.current_phase,
         "collected_data": dict(guard.collected_data),
         "tool_history": guard.tool_history,
-        "actual_tools": [t["tool"] for t in guard.tool_history if "tool" in t],
+        "actual_tools": actual_tools,
         "expected_tools": scenario["expected_tools"],
+        "forbidden_tools": scenario.get("forbidden_tools", []),
     }
 
 
@@ -129,33 +163,49 @@ def evaluate_result(result: dict) -> dict:
     """결과를 평가."""
     actual = result["actual_tools"]
     expected = result["expected_tools"]
+    forbidden = result.get("forbidden_tools", [])
 
-    # 1. 순서 일치 (in-order match)
-    in_order = True
+    # 1. 순서 일치 (in-order subsequence match)
     expected_idx = 0
     for tool in actual:
         if expected_idx < len(expected) and tool == expected[expected_idx]:
             expected_idx += 1
     in_order_score = expected_idx / len(expected) if expected else 1.0
 
-    # 2. 전체 포함 (all expected tools were called)
+    # 2. 커버리지 (expected tools 중 실제 호출된 비율)
     coverage = sum(1 for t in expected if t in actual) / len(expected) if expected else 1.0
 
-    # 3. 불필요한 호출 (actual에는 있지만 expected에 없는 것)
+    # 3. 효율성 (불필요한 호출 비율)
     unnecessary = [t for t in actual if t not in expected]
     efficiency = 1.0 - (len(unnecessary) / max(len(actual), 1))
 
-    # 4. cmsId 사용 여부 확인
+    # 4. 금지 Tool 위반 여부
+    violations = [t for t in actual if t in forbidden]
+    no_violations = len(violations) == 0
+
+    # 5. cmsId 사용 여부
     cms_id_used = "master_cms_id" in result.get("collected_data", {})
+
+    # 종합 pass/fail
+    passed = (
+        coverage >= 0.8
+        and no_violations
+        and (in_order_score >= 0.7 or not expected)
+    )
 
     return {
         "scenario": result["scenario"],
+        "category": result["category"],
+        "passed": passed,
         "in_order_score": round(in_order_score, 2),
         "coverage_score": round(coverage, 2),
         "efficiency_score": round(max(efficiency, 0), 2),
+        "no_violations": no_violations,
+        "violations": violations,
         "cms_id_used": cms_id_used,
         "actual_tools": actual,
         "expected_tools": expected,
+        "forbidden_tools": forbidden,
         "unnecessary_tools": unnecessary,
         "final_phase": result["final_phase"],
         "tool_call_count": len(actual),
@@ -170,45 +220,77 @@ def main():
         if confirm.lower() != "y":
             return
 
-    print("🚀 에이전트 평가 시나리오 실행")
-    print(f"📊 Langfuse에서 trace 확인: {os.environ.get('LANGFUSE_HOST', '')}")
+    # 특정 시나리오만 실행
+    filter_id = None
+    if "--scenario" in sys.argv:
+        idx = sys.argv.index("--scenario")
+        if idx + 1 < len(sys.argv):
+            filter_id = sys.argv[idx + 1]
 
+    # 시나리오 로드
+    scenarios = load_scenarios_from_files()
+    if not scenarios:
+        print("❌ scenarios/ 폴더에 시나리오가 없습니다.")
+        return
+
+    if filter_id:
+        scenarios = [s for s in scenarios if filter_id in s["name"]]
+        if not scenarios:
+            print(f"❌ '{filter_id}' 시나리오를 찾을 수 없습니다.")
+            return
+
+    print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 병렬)")
+    print(f"📊 Langfuse: {LANGFUSE_HOST}")
+
+    # 병렬 실행 (각 시나리오는 독립 에이전트 인스턴스)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
+
+    start = time.time()
     all_results = []
-    all_evals = []
+    with ThreadPoolExecutor(max_workers=min(len(scenarios), 5)) as executor:
+        futures = {executor.submit(run_scenario, s): s["name"] for s in scenarios}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                result = future.result()
+                all_results.append(result)
+            except Exception as e:
+                print(f"  ❌ {name} 실행 실패: {e}")
 
-    for scenario in SCENARIOS:
-        result = run_scenario(scenario)
-        all_results.append(result)
+    elapsed = time.time() - start
+    print(f"\n⏱️ 전체 소요: {elapsed:.1f}초 (병렬)")
 
-        evaluation = evaluate_result(result)
-        all_evals.append(evaluation)
+    all_evals = [evaluate_result(r) for r in all_results]
 
     # 결과 출력
     print(f"\n\n{'='*60}")
-    print("📊 평가 결과")
+    print(f"📊 평가 결과 ({len(all_evals)}개 시나리오)")
     print(f"{'='*60}\n")
 
+    passed_count = 0
     for ev in all_evals:
-        print(f"■ {ev['scenario']}")
-        print(f"  순서 일치: {ev['in_order_score']}")
-        print(f"  커버리지: {ev['coverage_score']}")
-        print(f"  효율성:   {ev['efficiency_score']}")
-        print(f"  cmsId:   {'✅' if ev['cms_id_used'] else '❌'}")
-        print(f"  Phase:   {ev['final_phase']}")
-        print(f"  호출 수:  {ev['tool_call_count']}회")
-        if ev['unnecessary_tools']:
-            print(f"  불필요:   {ev['unnecessary_tools']}")
-        print()
+        status = "✅ PASS" if ev["passed"] else "❌ FAIL"
+        passed_count += 1 if ev["passed"] else 0
 
-    # 종합 점수
-    avg_order = sum(e["in_order_score"] for e in all_evals) / len(all_evals)
-    avg_coverage = sum(e["coverage_score"] for e in all_evals) / len(all_evals)
-    avg_efficiency = sum(e["efficiency_score"] for e in all_evals) / len(all_evals)
+        print(f"{'─'*50}")
+        print(f"  {status}  [{ev['category']}] {ev['scenario']}")
+        print(f"  순서: {ev['in_order_score']}  커버리지: {ev['coverage_score']}  효율: {ev['efficiency_score']}")
+        print(f"  Tool: {ev['tool_call_count']}회  Phase: {ev['final_phase']}")
+        if ev["violations"]:
+            print(f"  ⛔ 금지 Tool 위반: {ev['violations']}")
+        if ev["unnecessary_tools"]:
+            print(f"  ⚠️  불필요: {ev['unnecessary_tools']}")
 
-    print(f"{'─'*40}")
-    print(f"종합 순서 일치:  {avg_order:.2f}")
-    print(f"종합 커버리지:   {avg_coverage:.2f}")
-    print(f"종합 효율성:     {avg_efficiency:.2f}")
+    # 종합
+    print(f"\n{'='*60}")
+    print(f"📋 종합: {passed_count}/{len(all_evals)} PASS")
+
+    if all_evals:
+        avg_order = sum(e["in_order_score"] for e in all_evals) / len(all_evals)
+        avg_coverage = sum(e["coverage_score"] for e in all_evals) / len(all_evals)
+        avg_efficiency = sum(e["efficiency_score"] for e in all_evals) / len(all_evals)
+        print(f"   평균 순서: {avg_order:.2f}  커버리지: {avg_coverage:.2f}  효율: {avg_efficiency:.2f}")
 
     # JSON 저장
     with open("eval_results.json", "w") as f:

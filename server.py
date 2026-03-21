@@ -20,11 +20,13 @@ LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "")
 
+import base64
+_auth = base64.b64encode(f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()).decode()
+
 exporter = OTLPSpanExporter(
     endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
     headers={
-        "x-langfuse-public-key": LANGFUSE_PUBLIC_KEY,
-        "x-langfuse-secret-key": LANGFUSE_SECRET_KEY,
+        "Authorization": f"Basic {_auth}",
     },
 )
 
