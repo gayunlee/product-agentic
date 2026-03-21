@@ -37,12 +37,20 @@ trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from src.agent.product_agent import create_product_agent
 
 app = FastAPI(title="상품 세팅 에이전트 POC")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 세션별 에이전트 (POC에서는 단일 세션)
 _agent = None
