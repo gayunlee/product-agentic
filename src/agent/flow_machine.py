@@ -342,6 +342,17 @@ class FlowMachine:
         if any(kw in msg for kw in ["완료했", "완료", "했어"]):
             return {"action": "confirm", "params": {}, "message": ""}
 
+        # "activate_xxx 실행해줘" → 개별 활성화 단계
+        if "activate_display" in msg:
+            return {"action": "activate_step", "params": {"step": "activate_display"}, "message": ""}
+        if "activate_page" in msg:
+            return {"action": "activate_step", "params": {"step": "activate_page"}, "message": ""}
+        if "activate_main" in msg:
+            return {"action": "activate_step", "params": {"step": "activate_main"}, "message": ""}
+        # "activate 실행해줘" / "활성화" → do_activate
+        if "activate" in msg or "활성화" in msg:
+            return {"action": "do_activate", "params": {}, "message": ""}
+
         return None
 
     def _route_action(self, action: str, params: dict, llm_message: str) -> Response:
@@ -370,6 +381,10 @@ class FlowMachine:
             return self._handle_edit_request(llm_message)
         if action == "go_back":
             return self._handle_go_back(ParsedIntent("go_back", params.get("master_name", ""), "", params.get("target", "")))
+        if action == "do_activate":
+            return self._do_activate()
+        if action == "activate_step":
+            return self._handle_activate_step(params.get("step", ""))
         if action in ("setup", "create_option", "activate", "verify"):
             target = INTENT_TO_TARGET.get(action, "guide_create_page")
             return self._resolve_prerequisites(target)
@@ -825,6 +840,9 @@ class FlowMachine:
                 step=_step_meta("check_series"),
             )
 
+        if self.state == "wait_activate_step":
+            return self._handle_activate_step(msg)
+
         if self.state == "wait_select_page":
             # 유저가 페이지 코드를 입력하면 선택
             choices = self.data.get("_page_choices", {})
@@ -1070,62 +1088,99 @@ class FlowMachine:
     # ══════════════════════════════════════
 
     def _do_activate(self) -> Response:
+        """점진적 활성화: 현재 상태를 확인하고, 필요한 것만 하나씩 처리."""
+        page_id = self.data.get("product_page_id", "")
+        master_id = self.data.get("master_cms_id", "")
+        master_name = self.data.get("master_name", "")
+        product_ids = self.data.get("product_ids", [])
+        activate_step = self.data.get("_activate_step", 0)
+
+        checks = []
+
+        # 현재 상태 조회
+        # 1. 상품 옵션 노출
+        products = _api_get(f"/v1/product/group/{page_id}")
+        hidden = []
+        if isinstance(products, list):
+            hidden = [p for p in products if not p.get("isDisplay")]
+            visible = [p for p in products if p.get("isDisplay")]
+            checks.append(f"{'✅' if not hidden else '⚠️'} 상품 옵션 노출: {len(visible)}개 공개 / {len(hidden)}개 비공개")
+
+        # 2. 페이지 공개 상태
+        page = _api_get(f"/v1/product-group/{page_id}")
+        page_status = page.get("status", "") if isinstance(page, dict) else ""
+        checks.append(f"{'✅' if page_status == 'ACTIVE' else '⚠️'} 상품 페이지: {_status_label(page_status)}")
+
+        # 3. 메인 상품 페이지
+        main = _api_get(f"/v1/masters/{master_id}/main-product-group")
+        main_status = main.get("productGroupViewStatus", "") if isinstance(main, dict) and not main.get("error") else ""
+        checks.append(f"{'✅' if main_status == 'ACTIVE' else '⚠️'} 메인 상품 페이지: {_status_label(main_status) if main_status else '미설정'}")
+
+        checks_text = "\n".join(checks)
+
+        # 다음 해야 할 작업 결정
+        buttons = []
+
+        if hidden:
+            names = ", ".join(p.get("name", "") for p in hidden)
+            buttons.append({
+                "type": "action", "label": f"👁️ 비공개 옵션 {len(hidden)}개 공개하기",
+                "actionId": "activate_display", "variant": "primary",
+                "description": f"{names} 옵션을 공개합니다.",
+            })
+
+        if page_status != "ACTIVE":
+            buttons.append({
+                "type": "action", "label": "📄 상품 페이지 공개하기",
+                "actionId": "activate_page", "variant": "primary",
+                "description": "상품 페이지를 공개 상태로 변경합니다.",
+            })
+
+        if main_status != "ACTIVE":
+            buttons.append({
+                "type": "action", "label": "🏠 메인 상품 페이지 활성화",
+                "actionId": "activate_main", "variant": "primary",
+                "description": "어스플러스 구독 탭에서 이 마스터의 상품이 노출됩니다.",
+            })
+
+        if not buttons:
+            # 모두 완료
+            self.state = "verification"
+            return self._exec_verification()
+
+        self.state = "wait_activate_step"
+        return Response(
+            message=f"**{master_name}** 활성화 현황:\n\n{checks_text}\n\n아래 항목을 하나씩 처리합니다.",
+            buttons=buttons, step=_step_meta("confirm_activate"), mode="execute",
+        )
+
+    def _handle_activate_step(self, msg: str) -> Response:
+        """개별 활성화 단계 실행."""
         page_id = self.data.get("product_page_id", "")
         master_id = self.data.get("master_cms_id", "")
         product_ids = self.data.get("product_ids", [])
-        steps_done = []
-        errors = []
 
-        # 1/4 상품 노출
-        for pid in product_ids:
-            r = _api_patch("/v1/product/display", {"id": pid, "isDisplay": True})
-            if isinstance(r, dict) and r.get("error"):
-                errors.append("상품 노출 설정 실패")
-                break
-        if not errors:
-            steps_done.append("✅ 1/4 상품 노출 ON")
+        if "activate_display" in msg:
+            for pid in product_ids:
+                _api_patch("/v1/product/display", {"id": pid, "isDisplay": True})
+            if product_ids:
+                _api_patch(f"/v1/product/group/{page_id}/sequence", {"ids": product_ids})
+            return self._do_activate()  # 다시 현황 확인
 
-        # 2/4 순서 설정
-        if not errors and product_ids:
-            r = _api_patch(f"/v1/product/group/{page_id}/sequence", {"ids": product_ids})
-            if isinstance(r, dict) and r.get("error"):
-                errors.append("순서 설정 실패")
-            else:
-                steps_done.append("✅ 2/4 순서 설정")
+        if "activate_page" in msg:
+            _api_patch("/v1/product-group/status", {"id": page_id, "status": "ACTIVE"})
+            return self._do_activate()
 
-        # 3/4 페이지 공개
-        if not errors:
-            r = _api_patch("/v1/product-group/status", {"id": page_id, "status": "ACTIVE"})
-            if isinstance(r, dict) and r.get("error"):
-                errors.append("페이지 공개 실패")
-            else:
-                steps_done.append("✅ 3/4 페이지 공개")
-
-        # 4/4 메인 상품 설정
-        if not errors:
-            r = _api_patch(f"/v1/masters/{master_id}/main-product-group", {
+        if "activate_main" in msg:
+            _api_patch(f"/v1/masters/{master_id}/main-product-group", {
                 "productGroupType": "US_PLUS",
                 "productGroupViewStatus": "ACTIVE",
                 "isProductGroupWebLinkStatus": "INACTIVE",
                 "isProductGroupAppLinkStatus": "INACTIVE",
             })
-            if isinstance(r, dict) and r.get("error"):
-                errors.append("메인 상품 설정 실패")
-            else:
-                steps_done.append("✅ 4/4 메인 상품 설정")
+            return self._do_activate()
 
-        progress = "\n".join(steps_done)
-
-        if errors:
-            failed_step = len(steps_done) + 1
-            return Response(
-                message=f"⚠️ 활성화 {failed_step}/4 단계에서 실패\n\n{progress}\n❌ {errors[0]}\n\n완료된 단계까지는 적용되었습니다. 재시도하면 실패한 단계부터 진행합니다.",
-                buttons=[{"type": "action", "label": "🔄 재시도", "actionId": "activate", "variant": "danger", "description": f"{failed_step}단계부터 재시도합니다."}],
-                step=_step_meta("confirm_activate"), mode="execute",
-            )
-
-        self.state = "verification"
-        return self._exec_verification()
+        return self._do_activate()
 
     # ══════════════════════════════════════
     # 의도 분류 (LLM structured output)
