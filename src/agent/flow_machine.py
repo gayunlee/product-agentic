@@ -749,11 +749,10 @@ class FlowMachine:
 
         self.state = "wait_create_option"
         return Response(
-            message=f"**{master_name}** > **{page_title}** ({type_label}){existing_text}\n\n옵션을 추가하거나, 등록이 끝났으면 활성화로 넘어갈 수 있습니다.",
+            message=f"**{master_name}** > **{page_title}** ({type_label}){existing_text}",
             buttons=[
-                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
-                {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요. 등록된 옵션을 확인합니다."},
-                {"type": "confirm", "label": "➕ 옵션 하나 더 등록", "variant": "secondary", "description": "추가 옵션을 등록합니다."},
+                {"type": "navigate", "label": "📦 옵션 추가", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={master_id}", "variant": "primary", "description": "새 상품 옵션을 등록합니다."},
+                {"type": "action", "label": "➡️ 다음 (활성화)", "actionId": "activate", "variant": "secondary", "description": "활성화 단계로 넘어갑니다."},
             ],
             step=_step_meta("guide_create_option"),
         )
