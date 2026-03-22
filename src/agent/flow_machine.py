@@ -181,7 +181,7 @@ class ParsedIntent:
 
 
 _STATUS_LABELS = {
-    "ACTIVE": "공개", "INACTIVE": "비공개",
+    "ACTIVE": "공개", "INACTIVE": "비공개", "EXCLUDED": "제외됨",
     "PUBLIC": "공개", "PRIVATE": "비공개", "PENDING": "준비중",
 }
 
@@ -1149,7 +1149,8 @@ class FlowMachine:
 
         self.state = "wait_activate_step"
         return Response(
-            message=f"**{master_name}** 활성화 현황:\n\n{checks_text}\n\n아래 항목을 하나씩 처리합니다.",
+            page_title = self.data.get("product_page_title", "")
+            message=f"**{master_name}** > **{page_title}** 활성화 현황:\n\n{checks_text}\n\n아래 항목을 하나씩 처리합니다.",
             buttons=buttons, step=_step_meta("confirm_activate"), mode="execute",
         )
 
