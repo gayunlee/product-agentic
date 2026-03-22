@@ -148,16 +148,54 @@ def _api_patch(path: str, body: dict):
         return _safe_request(r)
 
 
+import os
+import pathlib
+
+_STATE_DIR = pathlib.Path(os.environ.get("FLOW_STATE_DIR", "/tmp/flow_states"))
+
+
 class FlowMachine:
-    def __init__(self):
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
         self.state = "idle"
         self.data: dict = {}
         self._pending_target: str | None = None
+        self._load_state()
 
     def reset(self):
         self.state = "idle"
         self.data = {}
         self._pending_target = None
+        self._save_state()
+
+    def _state_file(self) -> pathlib.Path:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        return _STATE_DIR / f"{self.session_id}.json"
+
+    def _save_state(self):
+        """현재 상태를 파일에 저장."""
+        try:
+            payload = {
+                "state": self.state,
+                "data": {k: v for k, v in self.data.items() if not k.startswith("_")},
+                "pending_target": self._pending_target,
+            }
+            self._state_file().write_text(json.dumps(payload, ensure_ascii=False))
+        except Exception as e:
+            print(f"⚠️ 상태 저장 실패: {e}")
+
+    def _load_state(self):
+        """파일에서 상태 복구."""
+        try:
+            f = self._state_file()
+            if f.exists():
+                payload = json.loads(f.read_text())
+                self.state = payload.get("state", "idle")
+                self.data = payload.get("data", {})
+                self._pending_target = payload.get("pending_target")
+                print(f"🔄 상태 복구: state={self.state}, data keys={list(self.data.keys())}")
+        except Exception as e:
+            print(f"⚠️ 상태 복구 실패: {e}")
 
     # ══════════════════════════════════════
     # 메인 핸들러
@@ -167,43 +205,42 @@ class FlowMachine:
         msg = message.strip()
         print(f"📍 state={self.state}, msg={msg[:40]}")
 
-        # ── 대기 상태에서 "완료" 처리 ──
-        if self.state.startswith("wait_"):
-            return self._handle_wait(msg)
+        try:
+            # ── 대기 상태에서 "완료" 처리 ──
+            if self.state.startswith("wait_"):
+                return self._handle_wait(msg)
 
-        # ── LLM 의도 분류 요청 ──
-        # (여기서는 간이 분류 사용, 나중에 LLM structured output으로 교체)
-        parsed = self._parse_intent(msg)
-        print(f"📍 parsed: intent={parsed.intent}, master={parsed.master_name}")
+            # ── LLM 의도 분류 ──
+            parsed = self._parse_intent(msg)
+            print(f"📍 parsed: intent={parsed.intent}, master={parsed.master_name}")
 
-        # ── 진단/자유질문/수정/뒤로가기 ──
-        if parsed.intent == "diagnose":
-            return self._exec_diagnose(msg)
-        if parsed.intent == "edit":
-            return self._handle_edit_request(msg)
-        if parsed.intent == "go_back":
-            return self._handle_go_back(parsed)
-        if parsed.intent == "chat":
-            # 현재 진행 중인 플로우가 있으면 현재 상태 버튼 유지
-            if self.state != "idle":
-                return Response(
-                    message=msg, need_llm=True, mode="guide",
-                    step=_step_meta(self.state),
-                    buttons=self._buttons_for_state(self.state),
-                )
-            return Response(message=msg, need_llm=True, mode="idle")
+            # ── 진단/자유질문/수정/뒤로가기 ──
+            if parsed.intent == "diagnose":
+                return self._exec_diagnose(msg)
+            if parsed.intent == "edit":
+                return self._handle_edit_request(msg)
+            if parsed.intent == "go_back":
+                return self._handle_go_back(parsed)
+            if parsed.intent == "chat":
+                if self.state != "idle":
+                    return Response(
+                        message=msg, need_llm=True, mode="guide",
+                        step=_step_meta(self.state),
+                        buttons=self._buttons_for_state(self.state),
+                    )
+                return Response(message=msg, need_llm=True, mode="idle")
 
-        # ── 엔티티 저장 ──
-        if parsed.master_name:
-            self.data["_requested_master"] = parsed.master_name
-        if parsed.product_type:
-            self.data["product_type"] = parsed.product_type
+            # ── 엔티티 저장 ──
+            if parsed.master_name:
+                self.data["_requested_master"] = parsed.master_name
+            if parsed.product_type:
+                self.data["product_type"] = parsed.product_type
 
-        # ── 목표 상태 결정 ──
-        target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_page")
-
-        # ── 사전조건 역추적: 빠진 데이터부터 실행 ──
-        return self._resolve_prerequisites(target)
+            # ── 목표 상태 결정 + 사전조건 역추적 ──
+            target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_page")
+            return self._resolve_prerequisites(target)
+        finally:
+            self._save_state()
 
     # ══════════════════════════════════════
     # 사전조건 역추적
