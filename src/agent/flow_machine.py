@@ -13,60 +13,88 @@ from dataclasses import dataclass, field
 
 from src.tools.admin_api import _client, _safe_request
 
-# 의도 분류용 Bedrock 클라이언트 (Haiku — 빠르고 저렴)
+# ── LLM 대화 관리자 ──
 _bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
-_CLASSIFIER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
-CLASSIFIER_PROMPT = """유저 메시지를 분석하여 JSON으로 응답하세요.
+MANAGER_PROMPT = """당신은 어스플러스 관리자센터 상품 세팅 AI 어시스턴트입니다.
+운영매니저의 요청을 이해하고, 적절한 액션을 결정합니다.
 
-가능한 intent:
-- setup: 상품 페이지/옵션 세팅하고 싶다
-- create_option: 상품 옵션만 등록하고 싶다
-- activate: 활성화하고 싶다
-- verify: 검증/확인하고 싶다
-- query_master: 마스터(오피셜클럽) 조회/확인
-- query_series: 시리즈 조회/확인
-- diagnose: 왜 안 보이는지, 문제 진단
-- edit: 기존 상품/옵션/페이지 수정하고 싶다
-- go_back: 이전 단계로 돌아가고 싶다 ("마스터 바꿀래", "다른 페이지로")
-- confirm: 완료했다는 응답 ("완료", "했어" 등)
-- chat: 일반 대화/질문
+## 도메인 지식
+- **마스터(오피셜클럽)**: 콘텐츠 크리에이터 프로필. 공개/비공개/준비중 상태.
+- **시리즈**: 마스터의 콘텐츠 묶음. 상품 옵션에 연결 필수.
+- **상품 페이지**: 고객이 보는 결제 페이지. 공개/비공개 상태. 이미지 포함.
+- **상품 옵션**: 실제 구매 단위. 구독(월/분기/반기/연) 또는 단건.
+- **활성화**: 상품 노출 ON → 순서 설정 → 페이지 공개 → 메인 상품 설정 (4단계)
+- **선행 조건**: 오피셜클럽 → 시리즈 → 상품 페이지 → 상품 옵션 (순서 필수)
 
-반드시 아래 JSON 형식만 출력:
-{"intent": "...", "master_name": "...", "product_type": "...", "extra": "..."}
+## 사용 가능한 액션
+- search_master: 마스터 검색 (params: master_name)
+- list_masters: 전체 마스터 목록
+- check_series: 시리즈 확인 (params: master_name)
+- list_pages: 상품 페이지 목록 (params: master_name, filter: all/active/inactive)
+- list_options: 상품 옵션 목록 (params: master_name, page_code)
+- setup: 상품 전체 세팅 시작 (params: master_name, product_type: SUBSCRIPTION/ONE_TIME_PURCHASE)
+- create_option: 옵션 등록 안내 (params: master_name, page_code)
+- activate: 활성화 실행 (params: master_name)
+- diagnose: 노출 문제 진단 (params: master_name)
+- edit: 수정 안내 (params: master_name, target: page/option)
+- go_back: 이전 단계로 (params: target: master/page)
+- confirm: 유저가 작업 완료 알림
+- chat: 액션 없이 대화만
 
-master_name: 메시지에 마스터/오피셜클럽 이름이 있으면 추출. 없으면 빈 문자열.
-product_type: 구독/단건 언급이 있으면 "SUBSCRIPTION" 또는 "ONE_TIME_PURCHASE". 없으면 빈 문자열.
-extra: 추가 정보 (상품명, 금액 등). 없으면 빈 문자열."""
+## 응답 형식
+반드시 JSON만 출력:
+{"action": "...", "params": {...}, "message": "유저에게 보여줄 안내 메시지"}
+
+message: 유저에게 자연스럽게 안내하는 텍스트. 마크다운 사용 가능.
+action이 "chat"이면 message에 대화 응답을 넣으세요."""
 
 
-def _classify_with_llm(message: str, context_summary: str = "") -> ParsedIntent:
-    """Bedrock Claude Haiku로 의도 분류. 대화 맥락을 함께 전달."""
+def _llm_understand(message: str, history: list[dict], context_summary: str) -> dict:
+    """LLM이 대화를 이해하고 액션을 결정."""
     try:
-        system_text = CLASSIFIER_PROMPT
+        system_text = MANAGER_PROMPT
         if context_summary:
-            system_text += f"\n\n현재 대화 맥락:\n{context_summary}"
+            system_text += f"\n\n## 현재 상태\n{context_summary}"
+
+        # 대화 히스토리를 Bedrock messages 형식으로
+        messages = []
+        for h in history[-6:]:  # 최근 6턴만
+            messages.append({
+                "role": h["role"],
+                "content": [{"text": h["content"][:500]}],
+            })
+        messages.append({"role": "user", "content": [{"text": message}]})
 
         response = _bedrock.converse(
-            modelId=_CLASSIFIER_MODEL,
-            messages=[{"role": "user", "content": [{"text": message}]}],
+            modelId=_MODEL,
+            messages=messages,
             system=[{"text": system_text}],
-            inferenceConfig={"maxTokens": 100, "temperature": 0},
+            inferenceConfig={"maxTokens": 300, "temperature": 0},
         )
         text = response["output"]["message"]["content"][0]["text"].strip()
-        # JSON 추출 (```json ... ``` 또는 순수 JSON)
         if "```" in text:
             text = text.split("```")[1].replace("json", "").strip()
-        parsed = json.loads(text)
-        return ParsedIntent(
-            intent=parsed.get("intent", "chat"),
-            master_name=parsed.get("master_name", ""),
-            product_type=parsed.get("product_type", ""),
-            extra=parsed.get("extra", ""),
-        )
+        return json.loads(text)
     except Exception as e:
-        print(f"⚠️ LLM 분류 실패: {e}")
-        return ParsedIntent("chat", "", "")
+        print(f"⚠️ LLM 이해 실패: {e}")
+        return {"action": "chat", "params": {}, "message": "죄송합니다. 다시 말씀해주세요."}
+
+
+def _llm_format(results: dict, context_summary: str) -> str:
+    """LLM이 실행 결과를 자연어로 포맷."""
+    try:
+        response = _bedrock.converse(
+            modelId=_MODEL,
+            messages=[{"role": "user", "content": [{"text": json.dumps(results, ensure_ascii=False)}]}],
+            system=[{"text": f"API 실행 결과를 운영매니저에게 자연스럽게 안내하세요. 마크다운 사용. 간결하게.\n\n현재 상태:\n{context_summary}"}],
+            inferenceConfig={"maxTokens": 500, "temperature": 0},
+        )
+        return response["output"]["message"]["content"][0]["text"].strip()
+    except Exception as e:
+        print(f"⚠️ LLM 포맷 실패: {e}")
+        return json.dumps(results, ensure_ascii=False, indent=2)
 
 STEPS = ["마스터 확인", "시리즈 확인", "상품 페이지 생성", "상품 옵션 등록", "활성화", "검증"]
 
@@ -160,12 +188,14 @@ class FlowMachine:
         self.state = "idle"
         self.data: dict = {}
         self._pending_target: str | None = None
+        self._history: list[dict] = []  # 대화 히스토리
         self._load_state()
 
     def reset(self):
         self.state = "idle"
         self.data = {}
         self._pending_target = None
+        self._history = []
         self._save_state()
 
     def _state_file(self) -> pathlib.Path:
@@ -206,41 +236,149 @@ class FlowMachine:
         print(f"📍 state={self.state}, msg={msg[:40]}")
 
         try:
-            # ── 대기 상태에서 "완료" 처리 ──
-            if self.state.startswith("wait_"):
-                return self._handle_wait(msg)
+            # ── Phase 1: LLM이 대화를 이해하고 액션 결정 ──
+            context_summary = self._build_context_summary()
+            understood = _llm_understand(msg, self._history, context_summary)
+            action = understood.get("action", "chat")
+            params = understood.get("params", {})
+            llm_message = understood.get("message", "")
+            print(f"📍 LLM 결정: action={action}, params={params}")
 
-            # ── LLM 의도 분류 ──
-            parsed = self._parse_intent(msg)
-            print(f"📍 parsed: intent={parsed.intent}, master={parsed.master_name}")
+            # 대화 기록
+            self._history.append({"role": "user", "content": msg})
 
-            # ── 진단/자유질문/수정/뒤로가기 ──
-            if parsed.intent == "diagnose":
-                return self._exec_diagnose(msg)
-            if parsed.intent == "edit":
-                return self._handle_edit_request(msg)
-            if parsed.intent == "go_back":
-                return self._handle_go_back(parsed)
-            if parsed.intent == "chat":
-                if self.state != "idle":
-                    return Response(
-                        message=msg, need_llm=True, mode="guide",
-                        step=_step_meta(self.state),
-                        buttons=self._buttons_for_state(self.state),
-                    )
-                return Response(message=msg, need_llm=True, mode="idle")
+            # ── Phase 2: 엔티티 저장 ──
+            if params.get("master_name"):
+                self.data["_requested_master"] = params["master_name"]
+            if params.get("product_type"):
+                self.data["product_type"] = params["product_type"]
 
-            # ── 엔티티 저장 ──
-            if parsed.master_name:
-                self.data["_requested_master"] = parsed.master_name
-            if parsed.product_type:
-                self.data["product_type"] = parsed.product_type
+            # ── Phase 3: 액션 라우팅 → 스테이트머신 실행 ──
+            result = self._route_action(action, params, llm_message)
 
-            # ── 목표 상태 결정 + 사전조건 역추적 ──
-            target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_page")
-            return self._resolve_prerequisites(target)
+            # ── Phase 4: 결과를 LLM이 포맷 (코드 텍스트 대신) ──
+            if result.message.startswith("__RAW__:"):
+                raw_data = result.message[8:]
+                result.message = _llm_format(
+                    {"action": action, "data": raw_data, "buttons_count": len(result.buttons)},
+                    context_summary,
+                )
+
+            # 대화 기록
+            self._history.append({"role": "assistant", "content": result.message[:500]})
+
+            return result
         finally:
             self._save_state()
+
+    def _route_action(self, action: str, params: dict, llm_message: str) -> Response:
+        """액션을 스테이트머신으로 라우팅."""
+        # ── 대기 상태에서 confirm 처리 ──
+        if action == "confirm" and self.state.startswith("wait_"):
+            return self._handle_wait("완료했어")
+
+        # ── 직접 실행 액션 (조회류) ──
+        if action == "list_masters":
+            return self._action_list_masters()
+        if action == "search_master":
+            return self._action_search_master(params.get("master_name", ""))
+        if action == "list_pages":
+            return self._action_list_pages(params)
+        if action == "list_options":
+            return self._action_list_options(params)
+        if action == "check_series":
+            self.data["_requested_master"] = params.get("master_name", self.data.get("_requested_master", ""))
+            return self._resolve_prerequisites("check_series")
+
+        # ── 스테이트머신 플로우 액션 ──
+        if action == "diagnose":
+            return self._exec_diagnose(llm_message)
+        if action == "edit":
+            return self._handle_edit_request(llm_message)
+        if action == "go_back":
+            return self._handle_go_back(ParsedIntent("go_back", params.get("master_name", ""), "", params.get("target", "")))
+        if action in ("setup", "create_option", "activate", "verify"):
+            target = INTENT_TO_TARGET.get(action, "guide_create_page")
+            return self._resolve_prerequisites(target)
+
+        # ── 대기 상태에서 비-chat 액션 ──
+        if self.state.startswith("wait_") and action != "chat":
+            return self._handle_wait(llm_message or action)
+
+        # ── chat: LLM 메시지 그대로 사용 ──
+        buttons = self._buttons_for_state(self.state) if self.state != "idle" else []
+        step = _step_meta(self.state) if self.state in STATE_TO_STEP else None
+        return Response(message=llm_message, buttons=buttons, step=step, mode="guide" if self.state != "idle" else "idle")
+
+    # ── 조회 액션 구현 ──
+
+    def _action_list_masters(self) -> Response:
+        result = _api_get("/v1/masters")
+        if isinstance(result, list) and len(result) > 0:
+            rows = "\n".join(f"- **{m.get('name', '')}** ({_status_label(m.get('publicType', ''))}, cmsId: {m.get('cmsId', '')})" for m in result)
+            return Response(message=f"등록된 마스터 **{len(result)}개**:\n{rows}", step=_step_meta("check_master"))
+        return Response(message="등록된 마스터가 없습니다.")
+
+    def _action_search_master(self, name: str) -> Response:
+        if not name:
+            return self._action_list_masters()
+        self.data["_requested_master"] = name
+        return self._exec_check_master()
+
+    def _action_list_pages(self, params: dict) -> Response:
+        master_name = params.get("master_name", self.data.get("master_name", ""))
+        if not self.data.get("master_cms_id"):
+            if master_name:
+                self.data["_requested_master"] = master_name
+                self._exec_check_master()  # 마스터 먼저 찾기
+            if not self.data.get("master_cms_id"):
+                return Response(message="마스터를 먼저 알려주세요.")
+
+        cms_id = self.data["master_cms_id"]
+        pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        if not isinstance(pages, list) or len(pages) == 0:
+            return Response(message=f"**{self.data.get('master_name', '')}** 마스터에 상품 페이지가 없습니다.")
+
+        filter_type = params.get("filter", "all")
+        if filter_type == "active":
+            pages = [p for p in pages if p.get("status") == "ACTIVE"]
+        elif filter_type == "inactive":
+            pages = [p for p in pages if p.get("status") != "ACTIVE"]
+
+        label = {"all": "전체", "active": "공개 중인", "inactive": "비공개"}.get(filter_type, "")
+        rows = "\n".join(f"- **{p.get('title', '')}** (코드: {p.get('code', '')}, {_status_label(p.get('status', ''))})" for p in pages)
+        return Response(
+            message=f"**{self.data.get('master_name', '')}** {label} 상품 페이지 **{len(pages)}개**:\n{rows}",
+            step=_step_meta("guide_create_page"),
+        )
+
+    def _action_list_options(self, params: dict) -> Response:
+        page_code = params.get("page_code", "")
+        # 페이지 ID 찾기
+        page_id = self.data.get("product_page_id", "")
+        if page_code and not page_id:
+            cms_id = self.data.get("master_cms_id", "")
+            if cms_id:
+                pages = _api_get("/v1/product-group", {"masterId": cms_id})
+                if isinstance(pages, list):
+                    match = [p for p in pages if str(p.get("code", "")) == str(page_code)]
+                    if match:
+                        page_id = match[0].get("id", "")
+        if not page_id:
+            return Response(message="상품 페이지를 먼저 선택해주세요.")
+
+        products = _api_get(f"/v1/product/group/{page_id}")
+        if not isinstance(products, list) or len(products) == 0:
+            return Response(message="등록된 상품 옵션이 없습니다.")
+
+        rows = "\n".join(
+            f"- **{p.get('name', '')}** ({p.get('originPrice', 0):,}원, {'공개' if p.get('isDisplay') else '비공개'})"
+            for p in products
+        )
+        return Response(
+            message=f"상품 옵션 **{len(products)}개**:\n{rows}",
+            step=_step_meta("guide_create_option"),
+        )
 
     # ══════════════════════════════════════
     # 사전조건 역추적

@@ -153,15 +153,8 @@ async def chat(req: ChatRequest):
         msg = req.message.strip()
         _inject_token(req.context)
 
-        # 스테이트머신으로 처리
+        # 스테이트머신이 모든 걸 처리 (LLM 대화 관리 포함)
         result = _flow.handle(msg, req.context)
-
-        # LLM 필요한 경우 (진단, 자유질문, 사이드질문)
-        if result.need_llm:
-            agent = get_agent()
-            llm_result = str(agent(msg))
-            parsed = _parse_agent_response(llm_result)
-            result.message = parsed["message"]
 
         return ChatResponse(
             message=result.message,
@@ -204,14 +197,6 @@ async def chat_stream(req: ChatRequest):
         yield f"event: tool_start\ndata: {json.dumps({'tool': 'flow', 'message': '처리 중...'}, ensure_ascii=False)}\n\n"
 
         result = _flow.handle(msg, req.context)
-
-        # LLM 필요한 경우 (진단, 자유질문)
-        if result.need_llm:
-            yield f"event: tool_start\ndata: {json.dumps({'tool': 'llm', 'message': 'AI가 생각 중...'}, ensure_ascii=False)}\n\n"
-            agent = get_agent()
-            llm_result = str(agent(msg))
-            parsed = _parse_agent_response(llm_result)
-            result.message = parsed["message"]
 
         final_data = {
             "message": result.message,
