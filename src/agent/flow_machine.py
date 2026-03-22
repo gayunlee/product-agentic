@@ -836,35 +836,54 @@ class FlowMachine:
         page_id = self.data.get("product_page_id", "")
         master_id = self.data.get("master_cms_id", "")
         product_ids = self.data.get("product_ids", [])
+        steps_done = []
         errors = []
 
+        # 1/4 상품 노출
         for pid in product_ids:
             r = _api_patch("/v1/product/display", {"id": pid, "isDisplay": True})
             if isinstance(r, dict) and r.get("error"):
-                errors.append(f"상품 노출 실패 (id={pid})")
+                errors.append("상품 노출 설정 실패")
+                break
+        if not errors:
+            steps_done.append("✅ 1/4 상품 노출 ON")
 
-        if product_ids:
+        # 2/4 순서 설정
+        if not errors and product_ids:
             r = _api_patch(f"/v1/product/group/{page_id}/sequence", {"ids": product_ids})
             if isinstance(r, dict) and r.get("error"):
                 errors.append("순서 설정 실패")
+            else:
+                steps_done.append("✅ 2/4 순서 설정")
 
-        r = _api_patch("/v1/product-group/status", {"id": page_id, "status": "ACTIVE"})
-        if isinstance(r, dict) and r.get("error"):
-            errors.append("페이지 공개 실패")
+        # 3/4 페이지 공개
+        if not errors:
+            r = _api_patch("/v1/product-group/status", {"id": page_id, "status": "ACTIVE"})
+            if isinstance(r, dict) and r.get("error"):
+                errors.append("페이지 공개 실패")
+            else:
+                steps_done.append("✅ 3/4 페이지 공개")
 
-        r = _api_patch(f"/v1/masters/{master_id}/main-product-group", {
-            "productGroupType": "US_PLUS",
-            "productGroupViewStatus": "ACTIVE",
-            "isProductGroupWebLinkStatus": "INACTIVE",
-            "isProductGroupAppLinkStatus": "INACTIVE",
-        })
-        if isinstance(r, dict) and r.get("error"):
-            errors.append("메인 상품 설정 실패")
+        # 4/4 메인 상품 설정
+        if not errors:
+            r = _api_patch(f"/v1/masters/{master_id}/main-product-group", {
+                "productGroupType": "US_PLUS",
+                "productGroupViewStatus": "ACTIVE",
+                "isProductGroupWebLinkStatus": "INACTIVE",
+                "isProductGroupAppLinkStatus": "INACTIVE",
+            })
+            if isinstance(r, dict) and r.get("error"):
+                errors.append("메인 상품 설정 실패")
+            else:
+                steps_done.append("✅ 4/4 메인 상품 설정")
+
+        progress = "\n".join(steps_done)
 
         if errors:
+            failed_step = len(steps_done) + 1
             return Response(
-                message="⚠️ 활성화 중 일부 오류:\n" + "\n".join(f"  - {e}" for e in errors),
-                buttons=[{"type": "action", "label": "🔄 재시도", "actionId": "activate", "variant": "danger", "description": "활성화를 다시 시도합니다."}],
+                message=f"⚠️ 활성화 {failed_step}/4 단계에서 실패\n\n{progress}\n❌ {errors[0]}\n\n완료된 단계까지는 적용되었습니다. 재시도하면 실패한 단계부터 진행합니다.",
+                buttons=[{"type": "action", "label": "🔄 재시도", "actionId": "activate", "variant": "danger", "description": f"{failed_step}단계부터 재시도합니다."}],
                 step=_step_meta("confirm_activate"), mode="execute",
             )
 
