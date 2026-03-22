@@ -1094,24 +1094,36 @@ class FlowMachine:
         product_ids = self.data.get("product_ids", [])
         activate_step = self.data.get("_activate_step", 0)
 
+        page_title = self.data.get("product_page_title", "")
         checks = []
 
-        # 현재 상태 조회
+        # 현재 상태 조회 — 선택된 페이지 기준
+        checks.append(f"📄 **선택된 페이지: {page_title}**")
+
         # 1. 상품 옵션 노출
         products = _api_get(f"/v1/product/group/{page_id}")
         hidden = []
         if isinstance(products, list):
             hidden = [p for p in products if not p.get("isDisplay")]
             visible = [p for p in products if p.get("isDisplay")]
-            checks.append(f"{'✅' if not hidden else '⚠️'} 상품 옵션 노출: {len(visible)}개 공개 / {len(hidden)}개 비공개")
+            checks.append(f"{'✅' if not hidden else '⚠️'} 옵션 노출: {len(visible)}개 공개 / {len(hidden)}개 비공개")
 
-        # 2. 페이지 공개 상태
+        # 2. 이 페이지 공개 상태
         page = _api_get(f"/v1/product-group/{page_id}")
         page_status = page.get("status", "") if isinstance(page, dict) else ""
-        checks.append(f"{'✅' if page_status == 'ACTIVE' else '⚠️'} 상품 페이지: {_status_label(page_status)}")
+        checks.append(f"{'✅' if page_status == 'ACTIVE' else '⚠️'} 이 페이지: {_status_label(page_status)}")
 
-        # 3. 메인 상품 페이지
-        main = _api_get(f"/v1/masters/{master_id}/main-product-group")
+        # 3. 다른 페이지 현황
+        cms_id = self.data.get("master_cms_id", master_id)
+        all_pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        if isinstance(all_pages, list) and len(all_pages) > 1:
+            active_pages = [p for p in all_pages if p.get("status") == "ACTIVE"]
+            if active_pages:
+                names = ", ".join(p.get("title", "") for p in active_pages[:3])
+                checks.append(f"ℹ️ 다른 공개 페이지: {len(active_pages)}개 ({names})")
+
+        # 4. 메인 상품 페이지
+        main = _api_get(f"/v1/masters/{self.data.get('master_cms_id', master_id)}/main-product-group")
         main_status = main.get("productGroupViewStatus", "") if isinstance(main, dict) and not main.get("error") else ""
         checks.append(f"{'✅' if main_status == 'ACTIVE' else '⚠️'} 메인 상품 페이지: {_status_label(main_status) if main_status else '미설정'}")
 
@@ -1148,8 +1160,8 @@ class FlowMachine:
             return self._exec_verification()
 
         self.state = "wait_activate_step"
+        page_title = self.data.get("product_page_title", "")
         return Response(
-            page_title = self.data.get("product_page_title", "")
             message=f"**{master_name}** > **{page_title}** 활성화 현황:\n\n{checks_text}\n\n아래 항목을 하나씩 처리합니다.",
             buttons=buttons, step=_step_meta("confirm_activate"), mode="execute",
         )
