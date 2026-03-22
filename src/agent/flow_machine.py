@@ -247,11 +247,23 @@ class FlowMachine:
             # 대화 기록
             self._history.append({"role": "user", "content": msg})
 
-            # ── Phase 2: 엔티티 저장 ──
-            if params.get("master_name"):
-                self.data["_requested_master"] = params["master_name"]
+            # ── Phase 2: 엔티티 저장 + 마스터 변경 감지 ──
+            new_master = params.get("master_name", "")
+            if new_master and new_master != self.data.get("master_name", ""):
+                # 다른 마스터 → 관련 데이터 초기화
+                print(f"📍 마스터 변경 감지: {self.data.get('master_name', '')} → {new_master}")
+                for key in ["master_cms_id", "master_name", "master_id", "master_public_type",
+                            "series_ids", "series_titles", "product_page_id", "product_page_code",
+                            "product_page_title", "_all_pages", "product_ids", "_page_choices"]:
+                    self.data.pop(key, None)
+                self.data["_requested_master"] = new_master
+            elif new_master:
+                self.data["_requested_master"] = new_master
             if params.get("product_type"):
                 self.data["product_type"] = params["product_type"]
+            # page_code → product_page_id 변환
+            if params.get("page_code") and not self.data.get("product_page_id"):
+                self._resolve_page_code(params["page_code"])
 
             # ── Phase 3: 액션 라우팅 → 스테이트머신 실행 ──
             result = self._route_action(action, params, llm_message)
@@ -311,6 +323,29 @@ class FlowMachine:
         return Response(message=llm_message, buttons=buttons, step=step, mode="guide" if self.state != "idle" else "idle")
 
     # ── 조회 액션 구현 ──
+
+    def _resolve_page_code(self, page_code: str):
+        """page_code로 product_page_id를 찾아서 data에 저장."""
+        cms_id = self.data.get("master_cms_id", "")
+        if not cms_id:
+            return
+        pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        if isinstance(pages, list):
+            for p in pages:
+                if str(p.get("code", "")) == str(page_code) or p.get("title", "") == page_code:
+                    self.data["product_page_id"] = p.get("id", "")
+                    self.data["product_page_code"] = p.get("code", "")
+                    self.data["product_page_title"] = p.get("title", "")
+                    print(f"📍 page_code {page_code} → id={self.data['product_page_id']}")
+                    return
+            # 부분 매칭 시도
+            for p in pages:
+                if page_code in p.get("title", ""):
+                    self.data["product_page_id"] = p.get("id", "")
+                    self.data["product_page_code"] = p.get("code", "")
+                    self.data["product_page_title"] = p.get("title", "")
+                    print(f"📍 page_code 부분매칭 {page_code} → {self.data['product_page_title']}")
+                    return
 
     def _action_list_masters(self) -> Response:
         result = _api_get("/v1/masters")
