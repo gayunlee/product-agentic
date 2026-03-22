@@ -48,6 +48,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agent.product_agent import create_product_agent
+from src.agent.flow_machine import FlowMachine
 from src.agent.memory import save_turn, get_context_for_prompt
 
 app = FastAPI(title="상품 세팅 에이전트 POC")
@@ -60,7 +61,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 (POC에서는 단일 세션)
+# 스테이트머신 (메인 플로우)
+_flow = FlowMachine()
+
+# LLM 에이전트 (진단/자유질문 fallback용)
 _agent = None
 _flow_guard = None
 
@@ -71,8 +75,6 @@ def get_agent():
     global _agent, _flow_guard
     if _agent is None:
         _agent, _flow_guard = create_product_agent(use_memory=USE_MEMORY)
-        if USE_MEMORY and _flow_guard.memory_session:
-            print(f"🧠 AgentCore Memory 활성화 (session: {_flow_guard.memory_session.session_id})")
     return _agent
 
 
@@ -131,50 +133,41 @@ def _parse_agent_response(raw: str) -> dict:
     return {"message": message, "buttons": buttons, "meta": meta}
 
 
+def _inject_token(context: dict | None):
+    """context에서 토큰 추출 → admin_api에 주입."""
+    if context:
+        token = context.get("token", "")
+        if token:
+            import src.tools.admin_api as admin_api
+            admin_api.ADMIN_TOKEN = token
+            print(f"🔑 토큰 주입 완료: 길이={len(token)}")
+        else:
+            print(f"⚠️ token 없음, context keys: {list(context.keys())}")
+    else:
+        print("⚠️ context 없음")
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    agent = get_agent()
     try:
         msg = req.message.strip()
+        _inject_token(req.context)
 
-        # context를 메시지 앞에 추가
-        if req.context:
-            ctx_str = (
-                f"[컨텍스트: path={req.context.get('currentPath', '')}, "
-                f"role={req.context.get('role', '')}, "
-                f"masterId={req.context.get('masterId', '')}, "
-                f"productPageId={req.context.get('productPageId', '')}]\n"
-            )
-            full_msg = ctx_str + msg
-        else:
-            full_msg = msg
+        # 스테이트머신으로 처리
+        result = _flow.handle(msg, req.context)
 
-        # Memory: 유저 턴 저장
-        mem = _flow_guard.memory_session if _flow_guard else None
-        if mem:
-            try:
-                save_turn(mem, "user", msg)
-            except Exception as e:
-                print(f"⚠️ Memory 저장 실패 (user): {e}")
-
-        result = agent(full_msg)
-        raw = str(result)
-
-        # Memory: 어시스턴트 턴 저장
-        if mem:
-            try:
-                save_turn(mem, "assistant", raw[:2000])
-            except Exception as e:
-                print(f"⚠️ Memory 저장 실패 (assistant): {e}")
-
-        # structured 파싱
-        parsed = _parse_agent_response(raw)
+        # LLM 필요한 경우 (진단, 자유질문, 사이드질문)
+        if result.need_llm:
+            agent = get_agent()
+            llm_result = str(agent(msg))
+            parsed = _parse_agent_response(llm_result)
+            result.message = parsed["message"]
 
         return ChatResponse(
-            message=parsed["message"],
-            buttons=[Button(**b) for b in parsed["buttons"]],
-            mode=parsed["meta"].get("mode", "idle"),
-            step=StepProgress(**parsed["meta"]["step"]) if parsed["meta"].get("step") else None,
+            message=result.message,
+            buttons=[Button(**b) for b in result.buttons],
+            mode=result.mode,
+            step=StepProgress(**result.step) if result.step else None,
         )
     except Exception as e:
         return ChatResponse(message=f"오류 발생: {e}")
@@ -202,90 +195,29 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
+    _inject_token(req.context)
+
     async def event_generator():
-        agent = get_agent()
-
-        # context prefix
         msg = req.message.strip()
-        if req.context:
-            ctx_str = (
-                f"[컨텍스트: path={req.context.get('currentPath', '')}, "
-                f"role={req.context.get('role', '')}, "
-                f"masterId={req.context.get('masterId', '')}, "
-                f"productPageId={req.context.get('productPageId', '')}]\n"
-            )
-            full_msg = ctx_str + msg
-        else:
-            full_msg = msg
 
-        # Memory: 유저 턴 저장
-        mem = _flow_guard.memory_session if _flow_guard else None
-        if mem:
-            try:
-                save_turn(mem, "user", msg)
-            except Exception as e:
-                print(f"⚠️ Memory 저장 실패 (user): {e}")
+        # 스테이트머신 처리 (API 호출 포함, 즉시 완료)
+        yield f"event: tool_start\ndata: {json.dumps({'tool': 'flow', 'message': '처리 중...'}, ensure_ascii=False)}\n\n"
 
-        # FlowGuard의 tool_history를 폴링하여 tool 호출을 추적
-        result_container: dict = {"result": None, "error": None}
-        initial_tool_count = len(_flow_guard.tool_history) if _flow_guard else 0
+        result = _flow.handle(msg, req.context)
 
-        def run_agent():
-            try:
-                result_container["result"] = str(agent(full_msg))
-            except Exception as e:
-                result_container["error"] = str(e)
+        # LLM 필요한 경우 (진단, 자유질문)
+        if result.need_llm:
+            yield f"event: tool_start\ndata: {json.dumps({'tool': 'llm', 'message': 'AI가 생각 중...'}, ensure_ascii=False)}\n\n"
+            agent = get_agent()
+            llm_result = str(agent(msg))
+            parsed = _parse_agent_response(llm_result)
+            result.message = parsed["message"]
 
-        thread = threading.Thread(target=run_agent)
-        thread.start()
-
-        seen_tools = initial_tool_count
-        while thread.is_alive():
-            await asyncio.sleep(0.3)
-            if _flow_guard and len(_flow_guard.tool_history) > seen_tools:
-                for tool_entry in _flow_guard.tool_history[seen_tools:]:
-                    tool_name = tool_entry.get("tool", "") if isinstance(tool_entry, dict) else ""
-                    if not tool_name:
-                        continue
-                    desc = TOOL_DESCRIPTIONS.get(tool_name, f"{tool_name} 처리 중...")
-                    yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'message': desc}, ensure_ascii=False)}\n\n"
-                    yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'message': desc.replace('중...', '완료')}, ensure_ascii=False)}\n\n"
-                seen_tools = len(_flow_guard.tool_history)
-
-        thread.join()
-
-        # 남은 tool 이벤트 flush (스레드 종료 직전에 기록된 것)
-        if _flow_guard and len(_flow_guard.tool_history) > seen_tools:
-            for tool_entry in _flow_guard.tool_history[seen_tools:]:
-                tool_name = tool_entry.get("tool", "") if isinstance(tool_entry, dict) else ""
-                if not tool_name:
-                    continue
-                desc = TOOL_DESCRIPTIONS.get(tool_name, f"{tool_name} 처리 중...")
-                yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'message': desc}, ensure_ascii=False)}\n\n"
-                yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'message': desc.replace('중...', '완료')}, ensure_ascii=False)}\n\n"
-
-        if result_container["error"]:
-            err_msg = f"오류 발생: {result_container['error']}"
-            yield f"event: message\ndata: {json.dumps({'message': err_msg, 'buttons': [], 'mode': 'idle', 'step': None}, ensure_ascii=False)}\n\n"
-            return
-
-        raw = result_container["result"]
-
-        # Memory: 어시스턴트 턴 저장
-        if mem:
-            try:
-                save_turn(mem, "assistant", raw[:2000])
-            except Exception as e:
-                print(f"⚠️ Memory 저장 실패 (assistant): {e}")
-
-        parsed = _parse_agent_response(raw)
-
-        step = parsed["meta"].get("step")
         final_data = {
-            "message": parsed["message"],
-            "buttons": parsed["buttons"],
-            "mode": parsed["meta"].get("mode", "idle"),
-            "step": step,
+            "message": result.message,
+            "buttons": result.buttons,
+            "mode": result.mode,
+            "step": result.step,
         }
         yield f"event: message\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
 
@@ -301,6 +233,7 @@ async def reset():
     global _agent, _flow_guard
     _agent = None
     _flow_guard = None
+    _flow.reset()
     return {"status": "ok"}
 
 

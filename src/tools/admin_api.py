@@ -80,6 +80,7 @@ def _get_mock(tool_name: str, **kwargs) -> dict | list:
 
 
 def _client() -> httpx.Client:
+    print(f"🔐 _client() 토큰 길이={len(ADMIN_TOKEN)}")
     return httpx.Client(
         base_url=ADMIN_BASE,
         headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},

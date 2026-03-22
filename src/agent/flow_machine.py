@@ -1,0 +1,705 @@
+"""
+사전조건 체인 기반 스테이트머신.
+
+LLM이 의도+엔티티를 추출 → 라우터가 목표 상태 결정 →
+사전조건을 역추적하며 빠진 단계부터 실행.
+"""
+
+from __future__ import annotations
+
+import json
+import boto3
+from dataclasses import dataclass, field
+
+from src.tools.admin_api import _client, _safe_request
+
+# 의도 분류용 Bedrock 클라이언트 (Haiku — 빠르고 저렴)
+_bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
+_CLASSIFIER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+CLASSIFIER_PROMPT = """유저 메시지를 분석하여 JSON으로 응답하세요.
+
+가능한 intent:
+- setup: 상품 페이지/옵션 세팅하고 싶다
+- create_option: 상품 옵션만 등록하고 싶다
+- activate: 활성화하고 싶다
+- verify: 검증/확인하고 싶다
+- query_master: 마스터(오피셜클럽) 조회/확인
+- query_series: 시리즈 조회/확인
+- diagnose: 왜 안 보이는지, 문제 진단
+- confirm: 완료했다는 응답 ("완료", "했어" 등)
+- chat: 일반 대화/질문
+
+반드시 아래 JSON 형식만 출력:
+{"intent": "...", "master_name": "...", "extra": "..."}
+
+master_name: 메시지에 마스터/오피셜클럽 이름이 있으면 추출. 없으면 빈 문자열.
+extra: 추가 정보 (상품명, 금액 등). 없으면 빈 문자열."""
+
+
+def _classify_with_llm(message: str) -> ParsedIntent:
+    """Bedrock Claude Haiku로 의도 분류."""
+    try:
+        response = _bedrock.converse(
+            modelId=_CLASSIFIER_MODEL,
+            messages=[{"role": "user", "content": [{"text": message}]}],
+            system=[{"text": CLASSIFIER_PROMPT}],
+            inferenceConfig={"maxTokens": 100, "temperature": 0},
+        )
+        text = response["output"]["message"]["content"][0]["text"].strip()
+        # JSON 추출 (```json ... ``` 또는 순수 JSON)
+        if "```" in text:
+            text = text.split("```")[1].replace("json", "").strip()
+        parsed = json.loads(text)
+        return ParsedIntent(
+            intent=parsed.get("intent", "chat"),
+            master_name=parsed.get("master_name", ""),
+            extra=parsed.get("extra", ""),
+        )
+    except Exception as e:
+        print(f"⚠️ LLM 분류 실패: {e}")
+        return ParsedIntent("chat", "", "")
+
+STEPS = ["마스터 확인", "시리즈 확인", "상품 페이지 생성", "상품 옵션 등록", "활성화", "검증"]
+
+# ── 사전조건 체인 정의 ──
+# 각 상태가 필요로 하는 데이터 키
+PREREQUISITES = {
+    "check_master": [],                          # 시작점
+    "check_series": ["master_cms_id"],
+    "guide_create_page": ["master_cms_id", "series_ids"],
+    "guide_create_option": ["master_cms_id", "series_ids", "product_page_id"],
+    "confirm_activate": ["master_cms_id", "product_page_id", "product_ids"],
+    "verification": ["master_cms_id", "product_page_id"],
+}
+
+# 상태 → 스텝 번호
+STATE_TO_STEP = {
+    "check_master": 1,
+    "check_series": 2,
+    "guide_create_page": 3,
+    "guide_create_option": 4,
+    "confirm_activate": 5,
+    "verification": 6,
+}
+
+# 의도 → 목표 상태
+INTENT_TO_TARGET = {
+    "setup": "guide_create_page",
+    "create_page": "guide_create_page",
+    "create_option": "guide_create_option",
+    "activate": "confirm_activate",
+    "verify": "verification",
+    "query_master": "check_master",
+    "query_series": "check_series",
+    "diagnose": "diagnose",
+}
+
+
+@dataclass
+class Response:
+    message: str
+    buttons: list[dict] = field(default_factory=list)
+    mode: str = "guide"
+    step: dict | None = None
+    need_llm: bool = False
+
+
+@dataclass
+class ParsedIntent:
+    intent: str = "chat"
+    master_name: str = ""
+    extra: str = ""
+
+
+_STATUS_LABELS = {
+    "ACTIVE": "공개", "INACTIVE": "비공개",
+    "PUBLIC": "공개", "PRIVATE": "비공개", "PENDING": "준비중",
+}
+
+
+def _status_label(raw: str) -> str:
+    return _STATUS_LABELS.get(raw, raw)
+
+
+def _step_meta(state: str) -> dict:
+    num = STATE_TO_STEP.get(state, 1)
+    return {"current": num, "total": 6, "label": STEPS[num - 1], "steps": STEPS}
+
+
+def _api_get(path: str, params: dict | None = None):
+    with _client() as c:
+        r = c.get(path, params=params or {})
+        return _safe_request(r)
+
+
+def _api_patch(path: str, body: dict):
+    with _client() as c:
+        r = c.patch(path, json=body)
+        return _safe_request(r)
+
+
+class FlowMachine:
+    def __init__(self):
+        self.state = "idle"
+        self.data: dict = {}
+        self._pending_target: str | None = None
+
+    def reset(self):
+        self.state = "idle"
+        self.data = {}
+        self._pending_target = None
+
+    # ══════════════════════════════════════
+    # 메인 핸들러
+    # ══════════════════════════════════════
+
+    def handle(self, message: str, context: dict | None = None) -> Response:
+        msg = message.strip()
+        print(f"📍 state={self.state}, msg={msg[:40]}")
+
+        # ── 대기 상태에서 "완료" 처리 ──
+        if self.state.startswith("wait_"):
+            return self._handle_wait(msg)
+
+        # ── LLM 의도 분류 요청 ──
+        # (여기서는 간이 분류 사용, 나중에 LLM structured output으로 교체)
+        parsed = self._parse_intent(msg)
+        print(f"📍 parsed: intent={parsed.intent}, master={parsed.master_name}")
+
+        # ── 진단/자유질문 → LLM 위임 ──
+        if parsed.intent == "diagnose":
+            return Response(message=msg, need_llm=True, mode="diagnose")
+        if parsed.intent == "chat":
+            # 현재 진행 중인 플로우가 있으면 현재 상태 버튼 유지
+            if self.state != "idle":
+                return Response(
+                    message=msg, need_llm=True, mode="guide",
+                    step=_step_meta(self.state),
+                    buttons=self._buttons_for_state(self.state),
+                )
+            return Response(message=msg, need_llm=True, mode="idle")
+
+        # ── 마스터명이 있으면 데이터에 저장 (아직 검증 전) ──
+        if parsed.master_name:
+            self.data["_requested_master"] = parsed.master_name
+
+        # ── 목표 상태 결정 ──
+        target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_page")
+
+        # ── 사전조건 역추적: 빠진 데이터부터 실행 ──
+        return self._resolve_prerequisites(target)
+
+    # ══════════════════════════════════════
+    # 사전조건 역추적
+    # ══════════════════════════════════════
+
+    def _resolve_prerequisites(self, target: str, _depth: int = 0) -> Response:
+        """target 상태에 필요한 사전조건을 역추적, 빠진 것부터 실행."""
+        if _depth > 6:
+            print(f"⚠️ prerequisite 재귀 깊이 초과 → 중단")
+            return Response(message="처리 중 오류가 발생했습니다. 다시 시도해주세요.", mode="idle")
+
+        self._pending_target = target
+        required = PREREQUISITES.get(target, [])
+
+        for key in required:
+            val = self.data.get(key)
+            # 없거나 빈 리스트면 "없음"
+            if val is None or val == "" or val == []:
+                filler = self._find_filler_state(key)
+                # 이미 같은 상태를 실행 중이면 → 사전조건 충족 불가 (wait 상태로)
+                if filler == self.state:
+                    print(f"⚠️ {key} 충족 불가 (같은 상태 반복) → 대기")
+                    self._pending_target = target
+                    return self._execute_state(filler)
+                print(f"📍 prerequisite missing: {key} → run {filler}")
+                return self._execute_state(filler)
+
+        # 모든 사전조건 충족 → 목표 상태 실행
+        self._pending_target = None
+        print(f"📍 prerequisites met → execute {target}")
+        return self._execute_state(target)
+
+    def _find_filler_state(self, missing_key: str) -> str:
+        """빠진 데이터 키를 채울 수 있는 상태를 반환."""
+        key_to_state = {
+            "master_cms_id": "check_master",
+            "series_ids": "check_series",
+            "product_page_id": "guide_create_page",
+            "product_ids": "guide_create_option",
+        }
+        return key_to_state.get(missing_key, "check_master")
+
+    # ══════════════════════════════════════
+    # 상태별 실행
+    # ══════════════════════════════════════
+
+    def _execute_state(self, state: str) -> Response:
+        self.state = state
+        executor = {
+            "check_master": self._exec_check_master,
+            "check_series": self._exec_check_series,
+            "guide_create_page": self._exec_guide_create_page,
+            "guide_create_option": self._exec_guide_create_option,
+            "confirm_activate": self._exec_confirm_activate,
+            "verification": self._exec_verification,
+        }
+        fn = executor.get(state)
+        if fn:
+            return fn()
+        return Response(message="알 수 없는 상태입니다.", mode="idle")
+
+    # ── check_master ──
+
+    def _exec_check_master(self) -> Response:
+        name = self.data.get("_requested_master", "")
+        if not name:
+            self.state = "idle"
+            return Response(
+                message="어떤 마스터(오피셜클럽)에 상품 페이지를 만드시겠어요?",
+                buttons=[{"type": "navigate", "label": "📋 마스터 목록 보기", "url": "/official-club", "variant": "secondary", "description": "등록된 마스터 목록을 확인합니다."}],
+                step=_step_meta("check_master"),
+            )
+
+        print(f"🔍 search_master: '{name}'")
+        result = _api_get("/v1/masters", {"searchKeyword": name, "searchCategory": "NAME"})
+        print(f"🔍 결과: {str(result)[:200]}")
+
+        if isinstance(result, dict) and result.get("error"):
+            return Response(
+                message=f"API 오류: {result.get('guide', '')}",
+                buttons=[{"type": "navigate", "label": "📋 마스터 목록 보기", "url": "/official-club", "variant": "secondary", "description": "직접 확인해보세요."}],
+                step=_step_meta("check_master"),
+            )
+
+        if isinstance(result, list) and len(result) > 0:
+            exact = [m for m in result if m.get("name") == name]
+            master = exact[0] if exact else result[0]
+            self.data["master_cms_id"] = master.get("cmsId", "")
+            self.data["master_name"] = master.get("name", "")
+            self.data["master_id"] = master.get("id", "")
+            self.data["master_public_type"] = master.get("publicType", "")
+
+            # 사전조건 충족 → 다음 빠진 것 계속 resolve
+            if self._pending_target:
+                return self._resolve_prerequisites(self._pending_target, _depth=1)
+
+            return Response(
+                message=f"✅ **{self.data['master_name']}** 마스터 확인 (상태: {_status_label(self.data['master_public_type'])})",
+                step=_step_meta("check_master"),
+            )
+
+        # 전체 목록에서 찾기 시도
+        all_result = _api_get("/v1/masters")
+        if isinstance(all_result, list):
+            fuzzy = [m for m in all_result if name in m.get("name", "")]
+            if fuzzy:
+                master = fuzzy[0]
+                self.data["master_cms_id"] = master.get("cmsId", "")
+                self.data["master_name"] = master.get("name", "")
+                self.data["master_id"] = master.get("id", "")
+                self.data["master_public_type"] = master.get("publicType", "")
+                if self._pending_target:
+                    return self._resolve_prerequisites(self._pending_target)
+                return Response(
+                    message=f"✅ **{self.data['master_name']}** 마스터 확인 (상태: {_status_label(self.data['master_public_type'])})",
+                    step=_step_meta("check_master"),
+                )
+
+        return Response(
+            message=f"'{name}' 마스터를 찾을 수 없습니다.\n\n다른 이름으로 시도하거나, 새로 만들어주세요.",
+            buttons=[
+                {"type": "navigate", "label": "📋 마스터 목록 보기", "url": "/official-club", "variant": "secondary", "description": "등록된 마스터 목록을 확인합니다."},
+                {"type": "navigate", "label": "➕ 새 마스터 생성", "url": "/official-club/create", "variant": "primary", "description": "새 오피셜클럽을 생성합니다."},
+            ],
+            step=_step_meta("check_master"),
+        )
+
+    # ── check_series ──
+
+    def _exec_check_series(self) -> Response:
+        cms_id = self.data.get("master_cms_id", "")
+        master_name = self.data.get("master_name", "")
+        result = _api_get("/with-series", {"masterId": cms_id, "seriesState": "PUBLISHED"})
+
+        series_list = []
+        if isinstance(result, dict):
+            masters = result.get("masters", [])
+            if masters and masters[0].get("series"):
+                series_list = masters[0]["series"]
+                self.data["series_ids"] = [s["_id"] for s in series_list]
+                self.data["series_titles"] = [s.get("title", "") for s in series_list]
+
+        if series_list:
+            series_text = "\n".join(f"  - {s.get('title', '무제')}" for s in series_list)
+
+            # 사전조건 충족 → 계속 resolve
+            if self._pending_target:
+                # 기존 상품 페이지도 체크
+                self._check_existing_page()
+                return self._resolve_prerequisites(self._pending_target, _depth=2)
+
+            return Response(
+                message=f"✅ **{master_name}** 시리즈 {len(series_list)}개 확인\n{series_text}",
+                step=_step_meta("check_series"),
+            )
+
+        # 시리즈 없음
+        self.state = "wait_series"
+        return Response(
+            message=f"✅ **{master_name}** 마스터 확인\n❌ 시리즈가 없습니다. 상품 옵션에 시리즈가 필수이므로 먼저 생성해주세요.",
+            buttons=[
+                {"type": "navigate", "label": "📝 파트너센터에서 시리즈 생성", "url": "/partner", "variant": "primary", "description": "좌측 앱 전환 아이콘에서 '파트너'를 클릭해주세요."},
+                {"type": "confirm", "label": "✅ 시리즈 생성 완료", "variant": "primary", "description": "시리즈 생성을 완료했으면 눌러주세요. 시리즈를 재확인합니다."},
+            ],
+            step=_step_meta("check_series"),
+        )
+
+    def _check_existing_page(self):
+        """기존 상품 페이지가 있는지 확인하고 데이터에 저장."""
+        cms_id = self.data.get("master_cms_id", "")
+        if not cms_id:
+            return
+        print(f"🔍 check_existing_page: cmsId={cms_id}")
+        pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        if isinstance(pages, list) and len(pages) > 0:
+            self.data["_all_pages"] = pages
+            # 1개면 자동 선택, 여러 개면 나중에 선택하게
+            if len(pages) == 1:
+                self.data["product_page_id"] = pages[0].get("id", "")
+                self.data["product_page_code"] = pages[0].get("code", "")
+                self.data["product_page_title"] = pages[0].get("title", "")
+
+    # ── guide_create_page ──
+
+    def _exec_guide_create_page(self) -> Response:
+        master_name = self.data.get("master_name", "")
+        series_count = len(self.data.get("series_ids", []))
+        series_text = ", ".join(self.data.get("series_titles", []))
+
+        # 기존 페이지 확인
+        all_pages = self.data.get("_all_pages", [])
+        cms_id = self.data.get("master_cms_id", "")
+
+        if all_pages and "product_page_id" not in self.data:
+            # 여러 페이지 → 목록 보여주고 선택하게
+            status_label = {"ACTIVE": "공개", "INACTIVE": "비공개"}
+            rows = "\n".join(
+                f"- **{p.get('title', '')}** (코드: {p.get('code', '')}, {status_label.get(p.get('status', ''), p.get('status', ''))})"
+                for p in all_pages
+            )
+            self.state = "wait_select_page"
+            self.data["_page_choices"] = {str(p.get("code", "")): p for p in all_pages}
+            return Response(
+                message=f"✅ **{master_name}** 마스터 확인\n✅ 시리즈 {series_count}개: {series_text}\n\n기존 상품 페이지 **{len(all_pages)}개**:\n{rows}\n\n코드 번호를 알려주시면 해당 페이지에 옵션을 등록합니다.",
+                buttons=[
+                    {"type": "navigate", "label": "📄 새 상품 페이지 생성", "url": "/product/page/create", "variant": "secondary", "description": "새 페이지를 만듭니다."},
+                ],
+                step=_step_meta("guide_create_page"),
+            )
+
+        if "product_page_id" in self.data:
+            title = self.data.get("product_page_title", "")
+            code = self.data.get("product_page_code", "")
+            page_id = self.data.get("product_page_id", "")
+
+            self.state = "wait_create_option"
+            return Response(
+                message=f"✅ **{master_name}** 마스터 확인\n✅ 시리즈 {series_count}개: {series_text}\n✅ 상품 페이지: **{title}** (코드: {code})\n\n이 페이지에 상품 옵션을 등록하시겠어요?",
+                buttons=[
+                    {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={cms_id}", "variant": "primary", "description": f"'{title}' 페이지에 옵션을 추가합니다."},
+                    {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요."},
+                    {"type": "navigate", "label": "📄 새 상품 페이지 생성", "url": "/product/page/create", "variant": "secondary", "description": "기존 페이지 대신 새 페이지를 만듭니다."},
+                ],
+                step=_step_meta("guide_create_page"),
+            )
+
+        self.state = "wait_create_page"
+        return Response(
+            message=f"✅ **{master_name}** 마스터 확인\n✅ 시리즈 {series_count}개: {series_text}\n\n사전 조건 충족! 상품 페이지를 생성해주세요.",
+            buttons=[
+                {"type": "navigate", "label": "📄 상품 페이지 생성하러 가기", "url": "/product/page/create", "variant": "primary", "description": f"관리자센터에서 직접 생성합니다. 마스터에서 '{master_name}'을 선택하고, 정보 설정과 이미지까지 등록해주세요."},
+                {"type": "confirm", "label": "✅ 상품 페이지 생성 완료", "variant": "primary", "description": "생성을 완료했으면 눌러주세요. 결과를 확인합니다."},
+            ],
+            step=_step_meta("guide_create_page"),
+        )
+
+    # ── guide_create_option ──
+
+    def _exec_guide_create_option(self) -> Response:
+        page_id = self.data.get("product_page_id", "")
+        master_id = self.data.get("master_cms_id", "")
+        master_name = self.data.get("master_name", "")
+        page_title = self.data.get("product_page_title", "")
+
+        # 기존 옵션 확인
+        existing_text = ""
+        products = _api_get(f"/v1/product/group/{page_id}")
+        if isinstance(products, list) and len(products) > 0:
+            self.data["product_ids"] = [str(p.get("id", "")) for p in products]
+            existing_text = f"\n\n현재 등록된 옵션 **{len(products)}개**:\n" + "\n".join(
+                f"- {p.get('name', '')} ({p.get('originPrice', 0):,}원, {'공개' if p.get('isDisplay') else '비공개'})"
+                for p in products
+            )
+
+        self.state = "wait_create_option"
+        return Response(
+            message=f"**{master_name}** > **{page_title}** 페이지{existing_text}\n\n옵션을 추가하거나, 등록이 끝났으면 활성화로 넘어갈 수 있습니다.",
+            buttons=[
+                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
+                {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요. 등록된 옵션을 확인합니다."},
+                {"type": "confirm", "label": "➕ 옵션 하나 더 등록", "variant": "secondary", "description": "추가 옵션을 등록합니다."},
+            ],
+            step=_step_meta("guide_create_option"),
+        )
+
+    # ── confirm_activate ──
+
+    def _exec_confirm_activate(self) -> Response:
+        page_id = self.data.get("product_page_id", "")
+        products = _api_get(f"/v1/product/group/{page_id}")
+        if isinstance(products, list) and len(products) > 0:
+            self.data["product_ids"] = [str(p.get("id", "")) for p in products]
+            options_text = "\n".join(f"  - {p.get('name', '')} ({p.get('originPrice', 0):,}원)" for p in products)
+            return Response(
+                message=f"✅ 상품 옵션 {len(products)}개 확인!\n{options_text}\n\n활성화하면 고객에게 노출됩니다.",
+                buttons=[{"type": "action", "label": "🚀 활성화하기", "actionId": "activate", "variant": "primary", "description": "상품 노출, 순서, 페이지 공개, 메인 상품 설정을 한번에 처리합니다."}],
+                step=_step_meta("confirm_activate"), mode="execute",
+            )
+        return Response(message="상품 옵션이 없습니다. 옵션을 먼저 등록해주세요.", step=_step_meta("guide_create_option"))
+
+    # ── verification ──
+
+    def _exec_verification(self) -> Response:
+        page_id = self.data.get("product_page_id", "")
+        page_code = self.data.get("product_page_code", "")
+        checks = []
+
+        page = _api_get(f"/v1/product-group/{page_id}")
+        if isinstance(page, dict) and not page.get("error"):
+            status = page.get("status", "UNKNOWN")
+            sl = {"ACTIVE": "공개", "INACTIVE": "비공개"}
+            checks.append(f"{'✅' if status == 'ACTIVE' else '❌'} 상품 페이지: {sl.get(status, status)}")
+
+        products = _api_get(f"/v1/product/group/{page_id}")
+        if isinstance(products, list):
+            visible = [p for p in products if p.get("isDisplay")]
+            checks.append(f"{'✅' if visible else '❌'} 노출 중인 옵션: {len(visible)}개")
+
+        buttons = []
+        if page_id:
+            buttons.append({"type": "navigate", "label": "⚠️ 유의사항 등록", "url": f"/product/page/{page_id}?tab=caution", "variant": "secondary", "description": "유의사항을 등록합니다."})
+        if page_code:
+            buttons.append({"type": "navigate", "label": "🌐 고객 화면 확인", "url": f"https://dev.us-insight.com/products/group/{page_code}", "variant": "secondary", "description": "고객에게 보이는 화면을 확인합니다."})
+
+        return Response(
+            message=f"🎉 **검증 결과:**\n" + "\n".join(checks) + "\n\n**체크리스트:**\n☐ 금액/구성 확인\n☐ 프로모션 확인\n☐ 유의사항 등록\n☐ 마스터 공개 상태 확인",
+            buttons=buttons, step=_step_meta("verification"), mode="execute",
+        )
+
+    # ══════════════════════════════════════
+    # 대기 상태 처리
+    # ══════════════════════════════════════
+
+    def _handle_wait(self, msg: str) -> Response:
+        """wait_* 상태에서 유저 입력 처리."""
+        parsed = self._parse_intent(msg)
+
+        # "수정" 요청 → 현재 맥락 유지하면서 해당 페이지로 안내
+        if "수정" in msg or "편집" in msg or "바꿀" in msg or "변경" in msg:
+            return self._handle_edit_request(msg)
+
+        # 새로운 의도 감지 → 다른 마스터면 리셋, 같은 맥락이면 유지
+        if parsed.intent not in ("chat", "confirm"):
+            # 같은 마스터 관련이면 리셋하지 않음
+            if parsed.master_name and parsed.master_name != self.data.get("master_name", ""):
+                print(f"📍 다른 마스터 감지: {parsed.master_name} → 리셋")
+                self.reset()
+                self.data["_requested_master"] = parsed.master_name
+                target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_page")
+                return self._resolve_prerequisites(target)
+            # 마스터 없는 새 의도 → 현재 맥락에서 처리 시도
+            if parsed.intent in ("create_option", "activate", "verify"):
+                target = INTENT_TO_TARGET.get(parsed.intent, "guide_create_option")
+                return self._resolve_prerequisites(target)
+
+        if self.state == "wait_series":
+            if "완료" in msg:
+                return self._exec_check_series()
+            return Response(
+                message="시리즈 생성을 완료했으면 '완료' 버튼을 눌러주세요.",
+                buttons=[
+                    {"type": "navigate", "label": "📝 파트너센터에서 시리즈 생성", "url": "/partner", "variant": "primary", "description": "좌측 앱 전환 아이콘에서 '파트너'를 클릭해주세요."},
+                    {"type": "confirm", "label": "✅ 시리즈 생성 완료", "variant": "primary", "description": "시리즈를 재확인합니다."},
+                ],
+                step=_step_meta("check_series"),
+            )
+
+        if self.state == "wait_select_page":
+            # 유저가 페이지 코드를 입력하면 선택
+            choices = self.data.get("_page_choices", {})
+            # 숫자만 추출
+            nums = "".join(c for c in msg if c.isdigit())
+            if nums and nums in choices:
+                page = choices[nums]
+                self.data["product_page_id"] = page.get("id", "")
+                self.data["product_page_code"] = page.get("code", "")
+                self.data["product_page_title"] = page.get("title", "")
+                self.state = "wait_create_option"
+                return self._exec_guide_create_option()
+            # 페이지명으로 매칭 시도
+            for code, page in choices.items():
+                if page.get("title", "") in msg:
+                    self.data["product_page_id"] = page.get("id", "")
+                    self.data["product_page_code"] = page.get("code", "")
+                    self.data["product_page_title"] = page.get("title", "")
+                    self.state = "wait_create_option"
+                    return self._exec_guide_create_option()
+            return Response(
+                message="페이지 코드 번호를 입력해주세요.",
+                buttons=self._buttons_for_state("wait_select_page"),
+                step=_step_meta("guide_create_page"),
+            )
+
+        if self.state == "wait_create_page":
+            if "완료" in msg:
+                self._check_existing_page()
+                if "product_page_id" in self.data:
+                    page_title = self.data.get("product_page_title", "")
+                    page_code = self.data.get("product_page_code", "")
+                    if self._pending_target:
+                        return self._resolve_prerequisites(self._pending_target)
+                    self.state = "guide_create_option"
+                    return Response(
+                        message=f"✅ 상품 페이지 확인: {page_title} (코드: {page_code})\n\n상품 옵션을 등록해주세요.",
+                        buttons=self._buttons_for_state("guide_create_option"),
+                        step=_step_meta("guide_create_option"),
+                    )
+                master_name = self.data.get("master_name", "")
+                return Response(
+                    message="상품 페이지가 아직 확인되지 않습니다. 생성 후 다시 눌러주세요.",
+                    buttons=[
+                        {"type": "navigate", "label": "📄 상품 페이지 생성하러 가기", "url": "/product/page/create", "variant": "primary", "description": f"마스터에서 '{master_name}'을 선택해주세요."},
+                        {"type": "confirm", "label": "✅ 상품 페이지 생성 완료", "variant": "primary", "description": "생성을 완료했으면 눌러주세요."},
+                    ],
+                    step=_step_meta("guide_create_page"),
+                )
+
+        if self.state == "wait_create_option":
+            if "완료" in msg and "하나 더" not in msg:
+                page_id = self.data.get("product_page_id", "")
+                products = _api_get(f"/v1/product/group/{page_id}")
+                if isinstance(products, list) and len(products) > 0:
+                    self.data["product_ids"] = [str(p.get("id", "")) for p in products]
+                    return self._exec_confirm_activate()
+                return Response(message="상품 옵션이 아직 확인되지 않습니다.", buttons=self._buttons_for_state("guide_create_option"), step=_step_meta("guide_create_option"))
+            if "하나 더" in msg or "추가" in msg:
+                return self._exec_guide_create_option()
+            if "activate" in msg or "활성화" in msg:
+                return self._do_activate()
+
+        # 사이드 질문 → LLM 위임 + 현재 상태 버튼 유지
+        base_state = self.state.replace("wait_", "guide_create_").replace("wait_series", "check_series")
+        return Response(
+            message=msg, need_llm=True, mode="guide",
+            step=_step_meta(base_state if base_state in STATE_TO_STEP else "check_master"),
+            buttons=self._buttons_for_state(self.state),
+        )
+
+    def _handle_edit_request(self, msg: str) -> Response:
+        """수정/편집 요청 → 현재 맥락의 관리자센터 페이지로 안내."""
+        page_id = self.data.get("product_page_id", "")
+        master_id = self.data.get("master_cms_id", "")
+        master_name = self.data.get("master_name", "")
+        page_title = self.data.get("product_page_title", "")
+
+        buttons = []
+        if page_id:
+            buttons.extend([
+                {"type": "navigate", "label": "📄 상품 페이지 설정", "url": f"/product/page/{page_id}?masterId={master_id}&tab=settings", "variant": "primary", "description": "페이지 정보, 이미지 등을 수정합니다."},
+                {"type": "navigate", "label": "📦 상품 옵션 관리", "url": f"/product/page/{page_id}?masterId={master_id}&tab=options", "variant": "primary", "description": "기존 옵션을 수정하거나 새 옵션을 등록합니다."},
+            ])
+
+        return Response(
+            message=f"**{master_name}** > **{page_title}** 수정 페이지입니다.",
+            buttons=buttons,
+            step=_step_meta(self.state.replace("wait_create_", "guide_create_").replace("wait_", "") if self.state in STATE_TO_STEP else "guide_create_option"),
+        )
+
+    # ══════════════════════════════════════
+    # 활성화 실행
+    # ══════════════════════════════════════
+
+    def _do_activate(self) -> Response:
+        page_id = self.data.get("product_page_id", "")
+        master_id = self.data.get("master_cms_id", "")
+        product_ids = self.data.get("product_ids", [])
+        errors = []
+
+        for pid in product_ids:
+            r = _api_patch("/v1/product/display", {"id": pid, "isDisplay": True})
+            if isinstance(r, dict) and r.get("error"):
+                errors.append(f"상품 노출 실패 (id={pid})")
+
+        if product_ids:
+            r = _api_patch(f"/v1/product/group/{page_id}/sequence", {"ids": product_ids})
+            if isinstance(r, dict) and r.get("error"):
+                errors.append("순서 설정 실패")
+
+        r = _api_patch("/v1/product-group/status", {"id": page_id, "status": "ACTIVE"})
+        if isinstance(r, dict) and r.get("error"):
+            errors.append("페이지 공개 실패")
+
+        r = _api_patch(f"/v1/masters/{master_id}/main-product-group", {
+            "productGroupType": "US_PLUS",
+            "productGroupViewStatus": "ACTIVE",
+            "isProductGroupWebLinkStatus": "INACTIVE",
+            "isProductGroupAppLinkStatus": "INACTIVE",
+        })
+        if isinstance(r, dict) and r.get("error"):
+            errors.append("메인 상품 설정 실패")
+
+        if errors:
+            return Response(
+                message="⚠️ 활성화 중 일부 오류:\n" + "\n".join(f"  - {e}" for e in errors),
+                buttons=[{"type": "action", "label": "🔄 재시도", "actionId": "activate", "variant": "danger", "description": "활성화를 다시 시도합니다."}],
+                step=_step_meta("confirm_activate"), mode="execute",
+            )
+
+        self.state = "verification"
+        return self._exec_verification()
+
+    # ══════════════════════════════════════
+    # 의도 분류 (LLM structured output)
+    # ══════════════════════════════════════
+
+    def _parse_intent(self, msg: str) -> ParsedIntent:
+        """LLM으로 의도 + 마스터명 추출."""
+        return _classify_with_llm(msg)
+
+    # ══════════════════════════════════════
+    # 상태별 버튼
+    # ══════════════════════════════════════
+
+    def _buttons_for_state(self, state: str) -> list[dict]:
+        master_name = self.data.get("master_name", "")
+        page_id = self.data.get("product_page_id", "")
+        master_id = self.data.get("master_cms_id", "")
+
+        buttons_map = {
+            "wait_series": [
+                {"type": "navigate", "label": "📝 파트너센터에서 시리즈 생성", "url": "/partner", "variant": "primary", "description": "좌측 앱 전환 아이콘에서 '파트너'를 클릭해주세요."},
+                {"type": "confirm", "label": "✅ 시리즈 생성 완료", "variant": "primary", "description": "시리즈를 재확인합니다."},
+            ],
+            "wait_create_page": [
+                {"type": "navigate", "label": "📄 상품 페이지 생성하러 가기", "url": "/product/page/create", "variant": "primary", "description": f"마스터에서 '{master_name}'을 선택해주세요."},
+                {"type": "confirm", "label": "✅ 상품 페이지 생성 완료", "variant": "primary", "description": "생성을 완료했으면 눌러주세요."},
+            ],
+            "wait_create_option": [
+                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
+                {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요."},
+                {"type": "confirm", "label": "➕ 옵션 하나 더 등록", "variant": "secondary", "description": "추가 옵션을 등록합니다."},
+            ],
+        }
+        return buttons_map.get(state, [])
