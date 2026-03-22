@@ -460,7 +460,7 @@ class FlowMachine:
             return Response(
                 message=f"✅ **{master_name}** 마스터 확인\n✅ 시리즈 {series_count}개: {series_text}\n✅ 상품 페이지: **{title}** (코드: {code})\n\n이 페이지에 상품 옵션을 등록하시겠어요?",
                 buttons=[
-                    {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={cms_id}", "variant": "primary", "description": f"'{title}' 페이지에 옵션을 추가합니다."},
+                    {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={cms_id}", "variant": "primary", "description": f"'{title}' 페이지에 옵션을 추가합니다."},
                     {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요."},
                     {"type": "navigate", "label": "📄 새 상품 페이지 생성", "url": "/product/page/create", "variant": "secondary", "description": "기존 페이지 대신 새 페이지를 만듭니다."},
                 ],
@@ -495,11 +495,14 @@ class FlowMachine:
                 for p in products
             )
 
+        product_type = self.data.get("product_type", "SUBSCRIPTION")
+        type_label = "구독상품" if product_type == "SUBSCRIPTION" else "단건상품"
+
         self.state = "wait_create_option"
         return Response(
-            message=f"**{master_name}** > **{page_title}** 페이지{existing_text}\n\n옵션을 추가하거나, 등록이 끝났으면 활성화로 넘어갈 수 있습니다.",
+            message=f"**{master_name}** > **{page_title}** ({type_label}){existing_text}\n\n옵션을 추가하거나, 등록이 끝났으면 활성화로 넘어갈 수 있습니다.",
             buttons=[
-                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
+                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
                 {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요. 등록된 옵션을 확인합니다."},
                 {"type": "confirm", "label": "➕ 옵션 하나 더 등록", "variant": "secondary", "description": "추가 옵션을 등록합니다."},
             ],
@@ -931,7 +934,7 @@ class FlowMachine:
                 {"type": "confirm", "label": "✅ 상품 페이지 생성 완료", "variant": "primary", "description": "생성을 완료했으면 눌러주세요."},
             ],
             "wait_create_option": [
-                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
+                {"type": "navigate", "label": "📦 상품 옵션 등록하러 가기", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={master_id}", "variant": "primary", "description": "상품명, 금액, 결제주기, 시리즈를 입력해주세요."},
                 {"type": "confirm", "label": "✅ 상품 옵션 등록 완료", "variant": "primary", "description": "옵션 등록을 완료했으면 눌러주세요."},
                 {"type": "confirm", "label": "➕ 옵션 하나 더 등록", "variant": "secondary", "description": "추가 옵션을 등록합니다."},
             ],
