@@ -5,11 +5,15 @@ Strands Agent SDK로 구현한 관리자센터 상품 세팅 자동화 에이전
 FlowGuard로 Phase별 Tool 호출 순서를 강제합니다.
 """
 
+import json
 import uuid
+from pathlib import Path
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models.bedrock import BedrockModel
+
+GUARDRAIL_ID_PATH = Path(__file__).parent.parent.parent / "guardrail_id.json"
 
 from src.tools import (
     create_master_group,
@@ -55,9 +59,24 @@ def create_product_agent(
     """
     sid = session_id or str(uuid.uuid4())
 
+    # Guardrails
+    guardrail_kwargs = {}
+    if GUARDRAIL_ID_PATH.exists():
+        try:
+            with open(GUARDRAIL_ID_PATH) as f:
+                gd = json.load(f)
+            guardrail_kwargs = {
+                "guardrail_id": gd["guardrailId"],
+                "guardrail_version": gd["version"],
+            }
+            logger.info(f"Bedrock Guardrails 활성화: {gd['guardrailId']} v{gd['version']}")
+        except Exception as e:
+            logger.warning(f"Guardrail 설정 실패: {e}")
+
     model = BedrockModel(
         model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
         region_name="us-west-2",
+        **guardrail_kwargs,
     )
 
     # Memory 연동 + 이전 컨텍스트 주입
