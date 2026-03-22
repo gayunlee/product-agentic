@@ -622,6 +622,114 @@ class FlowMachine:
             buttons=self._buttons_for_state(self.state),
         )
 
+    # ══════════════════════════════════════
+    # 진단 모드 (코드 기반 체크리스트)
+    # ══════════════════════════════════════
+
+    def _exec_diagnose(self, msg: str) -> Response:
+        """진단: 코드로 체크리스트 순서대로 확인, LLM은 결과 요약만."""
+        master_name = self.data.get("_requested_master") or self.data.get("master_name", "")
+        if not master_name:
+            return Response(
+                message="어떤 마스터의 상품을 진단할까요? 마스터명을 알려주세요.",
+                step=_step_meta("check_master"), mode="diagnose",
+            )
+
+        checks = []
+        cms_id = self.data.get("master_cms_id", "")
+
+        # 1. 마스터 존재/공개 상태
+        if not cms_id:
+            result = _api_get("/v1/masters", {"searchKeyword": master_name, "searchCategory": "NAME"})
+            if isinstance(result, list) and len(result) > 0:
+                master = result[0]
+                cms_id = master.get("cmsId", "")
+                self.data["master_cms_id"] = cms_id
+                self.data["master_name"] = master.get("name", "")
+                self.data["master_id"] = master.get("id", "")
+                self.data["master_public_type"] = master.get("publicType", "")
+            else:
+                # 전체 검색 fallback
+                all_result = _api_get("/v1/masters")
+                if isinstance(all_result, list):
+                    fuzzy = [m for m in all_result if master_name in m.get("name", "")]
+                    if fuzzy:
+                        master = fuzzy[0]
+                        cms_id = master.get("cmsId", "")
+                        self.data["master_cms_id"] = cms_id
+                        self.data["master_name"] = master.get("name", "")
+                        self.data["master_id"] = master.get("id", "")
+                        self.data["master_public_type"] = master.get("publicType", "")
+
+        if not cms_id:
+            return Response(message=f"'{master_name}' 마스터를 찾을 수 없습니다.", mode="diagnose")
+
+        public_type = self.data.get("master_public_type", "")
+        is_public = public_type == "PUBLIC"
+        checks.append(f"{'✅' if is_public else '❌'} 마스터 공개 상태: {_status_label(public_type)}")
+
+        # 2. 메인 상품 페이지 활성화
+        main_product = _api_get(f"/v1/masters/{cms_id}/main-product-group")
+        main_active = False
+        if isinstance(main_product, dict) and not main_product.get("error"):
+            view_status = main_product.get("productGroupViewStatus", "")
+            main_active = view_status == "ACTIVE"
+            checks.append(f"{'✅' if main_active else '❌'} 메인 상품 페이지: {_status_label(view_status)}")
+        else:
+            checks.append("❌ 메인 상품 페이지: 설정 안 됨")
+
+        # 3. 상품 페이지 공개 상태
+        pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        page_active = False
+        page_id = ""
+        if isinstance(pages, list) and len(pages) > 0:
+            active_pages = [p for p in pages if p.get("status") == "ACTIVE"]
+            page_active = len(active_pages) > 0
+            if active_pages:
+                page_id = active_pages[0].get("id", "")
+            checks.append(f"{'✅' if page_active else '❌'} 상품 페이지: {len(active_pages)}개 공개 / {len(pages)}개 전체")
+        else:
+            checks.append("❌ 상품 페이지: 없음")
+
+        # 4. 공개 기간 확인
+        if page_active and active_pages:
+            p = active_pages[0]
+            if p.get("isAlwaysPublic"):
+                checks.append("✅ 공개 기간: 상시")
+            else:
+                start = p.get("startAt", "?")
+                end = p.get("endAt", "?")
+                checks.append(f"⚠️ 공개 기간: {start} ~ {end}")
+
+        # 5. 상품 옵션 노출
+        if page_id:
+            products = _api_get(f"/v1/product/group/{page_id}")
+            if isinstance(products, list):
+                visible = [p for p in products if p.get("isDisplay")]
+                checks.append(f"{'✅' if visible else '❌'} 노출 중인 옵션: {len(visible)}개 / {len(products)}개 전체")
+
+        # 원인 분석
+        causes = []
+        buttons = []
+        if not is_public:
+            causes.append("마스터가 비공개 상태")
+            buttons.append({"type": "navigate", "label": "📋 마스터 관리", "url": "/master/page", "variant": "primary", "description": "마스터 공개 상태를 변경합니다."})
+        if not main_active:
+            causes.append("메인 상품 페이지 비활성화")
+            buttons.append({"type": "navigate", "label": "📋 메인 상품 페이지 관리", "url": "/product/page/list", "variant": "primary", "description": "메인 상품 페이지를 활성화합니다."})
+        if not page_active:
+            causes.append("상품 페이지 비공개")
+
+        cause_text = ""
+        if causes:
+            cause_text = f"\n\n🎯 **원인**: " + ", ".join(causes)
+
+        self.state = "idle"
+        return Response(
+            message=f"📊 **{self.data.get('master_name', master_name)} 진단 결과**\n\n" + "\n".join(checks) + cause_text,
+            buttons=buttons, mode="diagnose",
+        )
+
     def _handle_edit_request(self, msg: str) -> Response:
         """수정/편집 요청 → 현재 맥락의 관리자센터 페이지로 안내."""
         page_id = self.data.get("product_page_id", "")
