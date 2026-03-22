@@ -267,9 +267,14 @@ class FlowMachine:
         print(f"📍 state={self.state}, msg={msg[:40]}")
 
         try:
+            # ── Phase 0: 확실한 패턴은 LLM 없이 빠르게 처리 ──
+            fast = self._fast_match(msg)
+            if fast:
+                print(f"📍 fast_match: {fast}")
+
             # ── Phase 1: LLM이 대화를 이해하고 액션 결정 ──
             context_summary = self._build_context_summary()
-            understood = _llm_understand(msg, self._history, context_summary)
+            understood = fast or _llm_understand(msg, self._history, context_summary)
             action = understood.get("action", "chat")
             params = understood.get("params", {})
             llm_message = understood.get("message", "")
@@ -313,6 +318,31 @@ class FlowMachine:
             return result
         finally:
             self._save_state()
+
+    def _fast_match(self, msg: str) -> dict | None:
+        """확실한 패턴은 LLM 호출 없이 바로 처리."""
+        # "옵션 추가/등록" → create_option
+        if any(kw in msg for kw in ["옵션 추가", "옵션 등록", "옵션추가", "옵션등록", "상품옵션 추가", "상품옵션 등록"]):
+            # 마스터명 추출 (가장 긴 한글 단어)
+            import re
+            words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
+            noise = {"마스터", "상품", "옵션", "추가", "등록", "해줘", "할래", "하고", "싶어", "페이지", "에"}
+            master = next((w for w in words if w not in noise and len(w) >= 2), "")
+            return {"action": "create_option", "params": {"master_name": master}, "message": ""}
+
+        # "상품 만들래/세팅해줘" → setup
+        if any(kw in msg for kw in ["세팅해", "만들려고", "만들래", "상품 만들", "상품만들"]):
+            import re
+            words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
+            noise = {"마스터", "상품", "페이지", "만들", "려고", "세팅", "해줘", "할래", "만들래"}
+            master = next((w for w in words if w not in noise and len(w) >= 2), "")
+            return {"action": "setup", "params": {"master_name": master}, "message": ""}
+
+        # "완료했어" → confirm
+        if any(kw in msg for kw in ["완료했", "완료", "했어"]):
+            return {"action": "confirm", "params": {}, "message": ""}
+
+        return None
 
     def _route_action(self, action: str, params: dict, llm_message: str) -> Response:
         """액션을 스테이트머신으로 라우팅."""
