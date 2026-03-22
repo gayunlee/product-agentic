@@ -1132,9 +1132,15 @@ class FlowMachine:
     # ══════════════════════════════════════
 
     def _parse_intent(self, msg: str) -> ParsedIntent:
-        """LLM으로 의도 + 마스터명 추출. 현재 맥락을 함께 전달."""
+        """LLM으로 의도 + 마스터명 추출."""
         context_summary = self._build_context_summary()
-        return _classify_with_llm(msg, context_summary)
+        result = _llm_understand(msg, self._history, context_summary)
+        return ParsedIntent(
+            intent=result.get("action", "chat"),
+            master_name=result.get("params", {}).get("master_name", ""),
+            product_type=result.get("params", {}).get("product_type", ""),
+            extra=result.get("message", ""),
+        )
 
     def _build_context_summary(self) -> str:
         """현재 플로우 상태를 LLM에 전달할 요약 문자열."""
