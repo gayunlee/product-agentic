@@ -730,6 +730,47 @@ class FlowMachine:
             buttons=buttons, mode="diagnose",
         )
 
+    def _handle_go_back(self, parsed: ParsedIntent) -> Response:
+        """역방향 전환 — 리셋 없이 특정 단계로 돌아감."""
+        # 다른 마스터면 마스터 데이터만 초기화
+        if parsed.master_name and parsed.master_name != self.data.get("master_name", ""):
+            self.data.pop("master_cms_id", None)
+            self.data.pop("master_name", None)
+            self.data.pop("master_id", None)
+            self.data.pop("master_public_type", None)
+            self.data.pop("series_ids", None)
+            self.data.pop("series_titles", None)
+            self.data.pop("product_page_id", None)
+            self.data.pop("product_page_code", None)
+            self.data.pop("product_page_title", None)
+            self.data.pop("_all_pages", None)
+            self.data.pop("product_ids", None)
+            self.data["_requested_master"] = parsed.master_name
+            return self._resolve_prerequisites(self._pending_target or "guide_create_page")
+
+        # "다른 페이지로" → 페이지 데이터만 초기화, 마스터/시리즈 유지
+        page_keywords = ["페이지", "다른 페이지"]
+        if any(kw in parsed.extra for kw in page_keywords):
+            self.data.pop("product_page_id", None)
+            self.data.pop("product_page_code", None)
+            self.data.pop("product_page_title", None)
+            self.data.pop("_all_pages", None)
+            self.data.pop("product_ids", None)
+            self._check_existing_page()
+            return self._exec_guide_create_page()
+
+        # 기본: 한 단계 뒤로
+        back_map = {
+            "wait_create_option": "guide_create_page",
+            "confirm_activate": "guide_create_option",
+            "verification": "confirm_activate",
+            "wait_create_page": "check_series",
+            "wait_series": "check_master",
+            "wait_select_page": "check_series",
+        }
+        target = back_map.get(self.state, "check_master")
+        return self._execute_state(target)
+
     def _handle_edit_request(self, msg: str) -> Response:
         """수정/편집 요청 → 현재 맥락의 관리자센터 페이지로 안내."""
         page_id = self.data.get("product_page_id", "")
