@@ -17,6 +17,7 @@ dependencies = [
     "requests>=2.32.5",
     "opentelemetry-sdk>=1.40.0",
     "bedrock-agentcore-sdk>=10.0.2",
+    "bedrock-agentcore>=1.4.7",
 ]
 
 [dependency-groups]

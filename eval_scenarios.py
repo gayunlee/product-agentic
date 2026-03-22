@@ -45,6 +45,10 @@ else:
 from src.agent.product_agent import create_product_agent
 from server import _extract_buttons
 
+# AgentCore Evaluation (--agentcore 플래그로 활성화)
+from strands_evals.telemetry import StrandsEvalsTelemetry
+from bedrock_agentcore.evaluation.span_to_adot_serializer import convert_strands_to_adot
+
 
 # ──────────────────────────────────────────────
 # 시나리오 로드 (scenarios/ 폴더에서)
@@ -115,12 +119,17 @@ def parse_scenario_file(path: Path, category: str) -> dict | None:
 # 시나리오 실행 + 결과 수집
 # ──────────────────────────────────────────────
 
-def run_scenario(scenario: dict) -> dict:
+def run_scenario(scenario: dict, collect_spans: bool = False) -> dict:
     """시나리오를 실행하고 결과를 반환."""
     print(f"\n{'='*60}")
     print(f"🧪 [{scenario['category']}] {scenario['name']}")
     print(f"   입력: \"{scenario['messages'][0][:60]}...\"")
     print(f"{'='*60}")
+
+    # AgentCore 평가용 spans 수집
+    telemetry = None
+    if collect_spans:
+        telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
 
     agent, guard = create_product_agent(session_id=scenario["session_id"])
 
@@ -154,6 +163,15 @@ def run_scenario(scenario: dict) -> dict:
     if button_data:
         print(f"  Buttons: {[b['label'] for b in button_data]}")
 
+    # OTEL spans → ADOT 변환
+    adot_docs = None
+    if telemetry:
+        raw_spans = list(telemetry.in_memory_exporter.get_finished_spans())
+        if raw_spans:
+            adot_docs = convert_strands_to_adot(raw_spans)
+            # tuple → list 변환 (langfuse.tags 등)
+            adot_docs = _fix_tuples(adot_docs)
+
     return {
         "scenario": scenario["name"],
         "category": scenario["category"],
@@ -165,7 +183,17 @@ def run_scenario(scenario: dict) -> dict:
         "expected_tools": scenario["expected_tools"],
         "forbidden_tools": scenario.get("forbidden_tools", []),
         "buttons": button_data,
+        "adot_docs": adot_docs,
     }
+
+
+def _fix_tuples(obj):
+    """ADOT 문서의 tuple을 list로 변환 (boto3 직렬화 호환)."""
+    if isinstance(obj, dict):
+        return {k: _fix_tuples(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_fix_tuples(i) for i in obj]
+    return obj
 
 
 def evaluate_result(result: dict) -> dict:
@@ -239,6 +267,55 @@ def evaluate_result(result: dict) -> dict:
     }
 
 
+def evaluate_with_agentcore(result: dict) -> dict:
+    """AgentCore Evaluation API로 평가. adot_docs가 있어야 동작."""
+    adot_docs = result.get("adot_docs")
+    if not adot_docs:
+        return {"scenario": result["scenario"], "agentcore": {}, "error": "no adot_docs"}
+
+    import boto3
+
+    client = boto3.client("bedrock-agentcore", region_name="us-west-2")
+
+    # evaluator IDs 로드
+    evaluator_ids_path = Path(__file__).parent / "evaluator_ids.json"
+    if not evaluator_ids_path.exists():
+        return {"scenario": result["scenario"], "agentcore": {}, "error": "evaluator_ids.json not found"}
+
+    with open(evaluator_ids_path) as f:
+        evaluator_ids = json.load(f)
+
+    # 내장 + 커스텀 평가기
+    evaluators = {
+        "Builtin.Helpfulness": "Builtin.Helpfulness",
+        "Builtin.GoalSuccessRate": "Builtin.GoalSuccessRate",
+        "Builtin.ToolSelectionAccuracy": "Builtin.ToolSelectionAccuracy",
+        "Builtin.Correctness": "Builtin.Correctness",
+    }
+    evaluators.update(evaluator_ids)
+
+    scores = {}
+    for name, eval_id in evaluators.items():
+        try:
+            resp = client.evaluate(
+                evaluatorId=eval_id,
+                evaluationInput={"sessionSpans": adot_docs},
+            )
+            r = resp.get("evaluationResults", [{}])[0]
+            if "errorMessage" in r:
+                scores[name] = {"error": r["errorCode"], "message": r["errorMessage"][:100]}
+            else:
+                scores[name] = {
+                    "value": r.get("value"),
+                    "label": r.get("label"),
+                    "explanation": r.get("explanation", "")[:200],
+                }
+        except Exception as e:
+            scores[name] = {"error": str(e)[:100]}
+
+    return {"scenario": result["scenario"], "agentcore": scores}
+
+
 def main():
     # Mock 모드 확인
     if os.environ.get("MOCK_MODE", "").lower() not in ("true", "1", "yes"):
@@ -247,7 +324,8 @@ def main():
         if confirm.lower() != "y":
             return
 
-    # 특정 시나리오만 실행
+    # 플래그 파싱
+    use_agentcore = "--agentcore" in sys.argv
     filter_id = None
     if "--scenario" in sys.argv:
         idx = sys.argv.index("--scenario")
@@ -266,24 +344,37 @@ def main():
             print(f"❌ '{filter_id}' 시나리오를 찾을 수 없습니다.")
             return
 
-    print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 병렬)")
+    if use_agentcore:
+        print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 순차 — AgentCore)")
+    else:
+        print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 병렬)")
     print(f"📊 Langfuse: {LANGFUSE_HOST}")
 
     # 병렬 실행 (각 시나리오는 독립 에이전트 인스턴스)
+    # AgentCore 모드에서는 순차 실행 (OTEL telemetry가 global이라 충돌 방지)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
 
     start = time.time()
     all_results = []
-    with ThreadPoolExecutor(max_workers=min(len(scenarios), 5)) as executor:
-        futures = {executor.submit(run_scenario, s): s["name"] for s in scenarios}
-        for future in as_completed(futures):
-            name = futures[future]
+
+    if use_agentcore:
+        for s in scenarios:
             try:
-                result = future.result()
+                result = run_scenario(s, collect_spans=True)
                 all_results.append(result)
             except Exception as e:
-                print(f"  ❌ {name} 실행 실패: {e}")
+                print(f"  ❌ {s['name']} 실행 실패: {e}")
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(scenarios), 5)) as executor:
+            futures = {executor.submit(run_scenario, s): s["name"] for s in scenarios}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    result = future.result()
+                    all_results.append(result)
+                except Exception as e:
+                    print(f"  ❌ {name} 실행 실패: {e}")
 
     elapsed = time.time() - start
     print(f"\n⏱️ 전체 소요: {elapsed:.1f}초 (병렬)")
@@ -323,9 +414,50 @@ def main():
         avg_efficiency = sum(e["efficiency_score"] for e in all_evals) / len(all_evals)
         print(f"   평균 순서: {avg_order:.2f}  커버리지: {avg_coverage:.2f}  효율: {avg_efficiency:.2f}")
 
+    # AgentCore Evaluation
+    agentcore_results = []
+    if use_agentcore:
+        print(f"\n\n{'='*60}")
+        print(f"🏛️  AgentCore Evaluation ({len(all_results)}개 시나리오)")
+        print(f"{'='*60}\n")
+
+        for result in all_results:
+            ac_result = evaluate_with_agentcore(result)
+            agentcore_results.append(ac_result)
+
+            print(f"{'─'*50}")
+            print(f"  📋 {ac_result['scenario']}")
+            if ac_result.get("error"):
+                print(f"  ❌ {ac_result['error']}")
+            else:
+                for eval_name, score_data in ac_result["agentcore"].items():
+                    if "error" in score_data:
+                        print(f"    {eval_name}: ❌ {score_data['error']}")
+                    else:
+                        print(f"    {eval_name}: {score_data.get('value', 'N/A')} ({score_data.get('label', '')})")
+
+        # AgentCore 종합
+        print(f"\n{'='*60}")
+        print(f"🏛️  AgentCore 종합")
+        # 평가기별 평균 점수
+        all_scores = {}
+        for ac in agentcore_results:
+            for eval_name, data in ac.get("agentcore", {}).items():
+                if "value" in data and data["value"] is not None:
+                    all_scores.setdefault(eval_name, []).append(data["value"])
+        for eval_name, scores in sorted(all_scores.items()):
+            avg = sum(scores) / len(scores)
+            print(f"   {eval_name}: {avg:.2f} ({len(scores)}건)")
+
     # JSON 저장
+    save_data = {"results": all_results, "evaluations": all_evals}
+    if agentcore_results:
+        save_data["agentcore_evaluations"] = agentcore_results
+    # adot_docs는 크므로 저장에서 제외
+    for r in save_data["results"]:
+        r.pop("adot_docs", None)
     with open("eval_results.json", "w") as f:
-        json.dump({"results": all_results, "evaluations": all_evals}, f, ensure_ascii=False, indent=2, default=str)
+        json.dump(save_data, f, ensure_ascii=False, indent=2, default=str)
     print(f"\n💾 결과 저장: eval_results.json")
 
 
