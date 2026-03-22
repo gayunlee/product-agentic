@@ -36,9 +36,15 @@ provider.add_span_processor(SimpleSpanProcessor(exporter))
 trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
+import re
+import json
+
+import asyncio
+import threading
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agent.product_agent import create_product_agent
@@ -48,7 +54,8 @@ app = FastAPI(title="상품 세팅 에이전트 POC")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,62 +82,72 @@ class ChatRequest(BaseModel):
 
 
 class Button(BaseModel):
-    type: str  # "navigate" | "confirm" | "action"
+    type: str  # "navigate" | "confirm" | "action" | "skip"
     label: str
     url: str | None = None
     actionId: str | None = None
+    variant: str | None = None  # "primary" | "secondary" | "danger"
+    description: str | None = None  # 버튼 아래 설명 텍스트
+
+
+class StepProgress(BaseModel):
+    current: int
+    total: int
+    label: str
+    steps: list[str]
 
 
 class ChatResponse(BaseModel):
-    response: str
+    message: str  # 마크다운 텍스트 (JSON 블록 제거된)
     buttons: list[Button] = []
-    phase: str | None = None
+    mode: str = "idle"  # "guide" | "execute" | "diagnose" | "idle"
+    step: StepProgress | None = None
 
 
-def _extract_buttons(text: str, phase: str, collected_data: dict) -> list[Button]:
-    """에이전트 응답에서 사이드패널 버튼을 생성."""
+def _parse_agent_response(raw: str) -> dict:
+    """에이전트 응답에서 structured blocks 파싱."""
     buttons = []
-    master_id = collected_data.get("master_cms_id", "")
-    page_id = collected_data.get("product_page_id", "")
-    page_code = collected_data.get("product_page_code", "")
+    meta = {"mode": "idle"}
+    message = raw
 
-    if phase == "init" and "오피셜클럽" not in text.lower() and master_id:
-        # 마스터 확인됨 → 자동 진행
-        pass
-    elif phase == "init" and ("없" in text or "등록되어 있지" in text):
-        buttons.append(Button(type="navigate", label="🏠 오피셜클럽 생성하러 가기", url="/official-club/create"))
-        buttons.append(Button(type="confirm", label="✅ 오피셜클럽 생성 완료"))
-    elif phase == "series" and ("시리즈가 없" in text or "시리즈를 먼저" in text):
-        buttons.append(Button(type="navigate", label="📝 파트너센터로 이동"))
-        buttons.append(Button(type="confirm", label="✅ 시리즈 생성 완료"))
-    elif phase == "product_page" and page_id == "" and "생성" in text:
-        buttons.append(Button(type="navigate", label="📄 상품 페이지 생성하러 가기", url="/product/page/create"))
-        buttons.append(Button(type="confirm", label="✅ 상품 페이지 생성 완료"))
-    elif phase == "product_option" or (phase == "product_page" and page_id):
-        url = f"/product/create?productPageId={page_id}&productType=SUBSCRIPTION&masterId={master_id}"
-        buttons.append(Button(type="navigate", label="📦 상품 옵션 등록하러 가기", url=url))
-        buttons.append(Button(type="confirm", label="✅ 상품 옵션 등록 완료"))
-        buttons.append(Button(type="confirm", label="➕ 옵션 하나 더 등록"))
-    elif phase == "activation":
-        buttons.append(Button(type="action", label="🚀 활성화하기", actionId="activate"))
-    elif phase == "verification" and page_code:
-        buttons.append(Button(type="navigate", label="🖼️ 이미지 설정", url=f"/product/page/{page_id}?tab=settings"))
-        buttons.append(Button(type="navigate", label="⚠️ 유의사항 등록", url=f"/product/page/{page_id}?tab=caution"))
-        buttons.append(Button(type="navigate", label="🌐 고객 화면 확인", url=f"https://dev.us-insight.com/products/group/{page_code}"))
+    # json:buttons 블록 파싱
+    btn_match = re.search(r'```json:buttons\s*\n(.*?)\n```', raw, re.DOTALL)
+    if btn_match:
+        try:
+            buttons = json.loads(btn_match.group(1))
+        except json.JSONDecodeError:
+            pass
+        message = message.replace(btn_match.group(0), '').strip()
 
-    return buttons
+    # json:meta 블록 파싱
+    meta_match = re.search(r'```json:meta\s*\n(.*?)\n```', raw, re.DOTALL)
+    if meta_match:
+        try:
+            meta = json.loads(meta_match.group(1))
+        except json.JSONDecodeError:
+            pass
+        message = message.replace(meta_match.group(0), '').strip()
+
+    return {"message": message, "buttons": buttons, "meta": meta}
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     agent = get_agent()
     try:
-        # Phase 전환 명령어 처리
         msg = req.message.strip()
-        if _flow_guard and msg.startswith("/phase "):
-            phase = msg.split("/phase ")[-1].strip()
-            _flow_guard.advance_to(phase)
-            return ChatResponse(response=f"Phase를 '{phase}'로 전환했습니다.", phase=phase)
+
+        # context를 메시지 앞에 추가
+        if req.context:
+            ctx_str = (
+                f"[컨텍스트: path={req.context.get('currentPath', '')}, "
+                f"role={req.context.get('role', '')}, "
+                f"masterId={req.context.get('masterId', '')}, "
+                f"productPageId={req.context.get('productPageId', '')}]\n"
+            )
+            full_msg = ctx_str + msg
+        else:
+            full_msg = msg
 
         # Memory: 유저 턴 저장
         mem = _flow_guard.memory_session if _flow_guard else None
@@ -140,29 +157,143 @@ async def chat(req: ChatRequest):
             except Exception as e:
                 print(f"⚠️ Memory 저장 실패 (user): {e}")
 
-        result = agent(msg)
-        response_text = str(result)
+        result = agent(full_msg)
+        raw = str(result)
 
         # Memory: 어시스턴트 턴 저장
         if mem:
             try:
-                save_turn(mem, "assistant", response_text[:2000])
+                save_turn(mem, "assistant", raw[:2000])
             except Exception as e:
                 print(f"⚠️ Memory 저장 실패 (assistant): {e}")
 
-        # 버튼 생성
-        current_phase = _flow_guard.current_phase if _flow_guard else "init"
-        collected = _flow_guard.collected_data if _flow_guard else {}
-        buttons = _extract_buttons(response_text, current_phase, collected)
+        # structured 파싱
+        parsed = _parse_agent_response(raw)
 
-        # Phase 상태 + 수집 데이터를 응답에 포함
-        phase_info = ""
-        if _flow_guard:
-            phase_info = f"\n\n---\n📍 Phase: `{_flow_guard.current_phase}` | 데이터: {list(_flow_guard.collected_data.keys())}"
-
-        return ChatResponse(response=response_text + phase_info, buttons=buttons, phase=current_phase)
+        return ChatResponse(
+            message=parsed["message"],
+            buttons=[Button(**b) for b in parsed["buttons"]],
+            mode=parsed["meta"].get("mode", "idle"),
+            step=StepProgress(**parsed["meta"]["step"]) if parsed["meta"].get("step") else None,
+        )
     except Exception as e:
-        return ChatResponse(response=f"오류 발생: {e}")
+        return ChatResponse(message=f"오류 발생: {e}")
+
+
+TOOL_DESCRIPTIONS: dict[str, str] = {
+    "search_masters": "마스터 검색 중...",
+    "get_master_groups": "마스터 그룹 확인 중...",
+    "get_master_detail": "마스터 상세 확인 중...",
+    "create_master_group": "마스터 그룹 생성 중...",
+    "get_series_list": "시리즈 확인 중...",
+    "create_series": "시리즈 생성 중...",
+    "get_product_page_list": "상품 페이지 확인 중...",
+    "get_product_page_detail": "상품 페이지 상세 확인 중...",
+    "get_product_list_by_page": "상품 옵션 확인 중...",
+    "create_product_page": "상품 페이지 생성 중...",
+    "create_product": "상품 옵션 등록 중...",
+    "update_product_display": "상품 노출 설정 중...",
+    "update_product_sequence": "상품 순서 설정 중...",
+    "update_product_page_status": "상품 페이지 상태 변경 중...",
+    "update_main_product_setting": "메인 상품 설정 중...",
+    "verify_product_setup": "검증 중...",
+}
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    async def event_generator():
+        agent = get_agent()
+
+        # context prefix
+        msg = req.message.strip()
+        if req.context:
+            ctx_str = (
+                f"[컨텍스트: path={req.context.get('currentPath', '')}, "
+                f"role={req.context.get('role', '')}, "
+                f"masterId={req.context.get('masterId', '')}, "
+                f"productPageId={req.context.get('productPageId', '')}]\n"
+            )
+            full_msg = ctx_str + msg
+        else:
+            full_msg = msg
+
+        # Memory: 유저 턴 저장
+        mem = _flow_guard.memory_session if _flow_guard else None
+        if mem:
+            try:
+                save_turn(mem, "user", msg)
+            except Exception as e:
+                print(f"⚠️ Memory 저장 실패 (user): {e}")
+
+        # FlowGuard의 tool_history를 폴링하여 tool 호출을 추적
+        result_container: dict = {"result": None, "error": None}
+        initial_tool_count = len(_flow_guard.tool_history) if _flow_guard else 0
+
+        def run_agent():
+            try:
+                result_container["result"] = str(agent(full_msg))
+            except Exception as e:
+                result_container["error"] = str(e)
+
+        thread = threading.Thread(target=run_agent)
+        thread.start()
+
+        seen_tools = initial_tool_count
+        while thread.is_alive():
+            await asyncio.sleep(0.3)
+            if _flow_guard and len(_flow_guard.tool_history) > seen_tools:
+                for tool_entry in _flow_guard.tool_history[seen_tools:]:
+                    tool_name = tool_entry.get("tool", "") if isinstance(tool_entry, dict) else ""
+                    if not tool_name:
+                        continue
+                    desc = TOOL_DESCRIPTIONS.get(tool_name, f"{tool_name} 처리 중...")
+                    yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'message': desc}, ensure_ascii=False)}\n\n"
+                    yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'message': desc.replace('중...', '완료')}, ensure_ascii=False)}\n\n"
+                seen_tools = len(_flow_guard.tool_history)
+
+        thread.join()
+
+        # 남은 tool 이벤트 flush (스레드 종료 직전에 기록된 것)
+        if _flow_guard and len(_flow_guard.tool_history) > seen_tools:
+            for tool_entry in _flow_guard.tool_history[seen_tools:]:
+                tool_name = tool_entry.get("tool", "") if isinstance(tool_entry, dict) else ""
+                if not tool_name:
+                    continue
+                desc = TOOL_DESCRIPTIONS.get(tool_name, f"{tool_name} 처리 중...")
+                yield f"event: tool_start\ndata: {json.dumps({'tool': tool_name, 'message': desc}, ensure_ascii=False)}\n\n"
+                yield f"event: tool_end\ndata: {json.dumps({'tool': tool_name, 'message': desc.replace('중...', '완료')}, ensure_ascii=False)}\n\n"
+
+        if result_container["error"]:
+            err_msg = f"오류 발생: {result_container['error']}"
+            yield f"event: message\ndata: {json.dumps({'message': err_msg, 'buttons': [], 'mode': 'idle', 'step': None}, ensure_ascii=False)}\n\n"
+            return
+
+        raw = result_container["result"]
+
+        # Memory: 어시스턴트 턴 저장
+        if mem:
+            try:
+                save_turn(mem, "assistant", raw[:2000])
+            except Exception as e:
+                print(f"⚠️ Memory 저장 실패 (assistant): {e}")
+
+        parsed = _parse_agent_response(raw)
+
+        step = parsed["meta"].get("step")
+        final_data = {
+            "message": parsed["message"],
+            "buttons": parsed["buttons"],
+            "mode": parsed["meta"].get("mode", "idle"),
+            "step": step,
+        }
+        yield f"event: message\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/reset")
@@ -264,7 +395,7 @@ async function send() {
     });
     const data = await res.json();
     loading.remove();
-    addMsg(data.response, 'agent');
+    addMsg(data.message, 'agent');
   } catch (e) {
     loading.remove();
     addMsg('오류가 발생했습니다: ' + e.message, 'system');
