@@ -60,13 +60,19 @@ def create_product_agent(
         region_name="us-west-2",
     )
 
-    # Memory 연동
+    # Memory 연동 + 이전 컨텍스트 주입
     system_prompt = SYSTEM_PROMPT
     memory_session = None
     if use_memory:
         try:
             memory_session = create_memory_session(session_id=sid, actor_id=actor_id)
             logger.info(f"AgentCore Memory 세션 생성: {sid}")
+
+            # 이전 이력 검색 → 시스템 프롬프트에 주입
+            context = get_context_for_prompt(memory_session, query="상품 세팅")
+            if context:
+                system_prompt = SYSTEM_PROMPT + f"\n\n## 메모리 (이전 대화/이력)\n{context}"
+                logger.info(f"Memory 컨텍스트 주입: {len(context)}자")
         except Exception as e:
             logger.warning(f"Memory 세션 생성 실패 (Memory 없이 진행): {e}")
 

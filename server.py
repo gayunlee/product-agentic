@@ -42,6 +42,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from src.agent.product_agent import create_product_agent
+from src.agent.memory import save_turn, get_context_for_prompt
 
 app = FastAPI(title="상품 세팅 에이전트 POC")
 
@@ -56,11 +57,15 @@ app.add_middleware(
 _agent = None
 _flow_guard = None
 
+USE_MEMORY = os.environ.get("USE_MEMORY", "").lower() in ("true", "1", "yes")
+
 
 def get_agent():
     global _agent, _flow_guard
     if _agent is None:
-        _agent, _flow_guard = create_product_agent()
+        _agent, _flow_guard = create_product_agent(use_memory=USE_MEMORY)
+        if USE_MEMORY and _flow_guard.memory_session:
+            print(f"🧠 AgentCore Memory 활성화 (session: {_flow_guard.memory_session.session_id})")
     return _agent
 
 
@@ -127,19 +132,35 @@ async def chat(req: ChatRequest):
             _flow_guard.advance_to(phase)
             return ChatResponse(response=f"Phase를 '{phase}'로 전환했습니다.", phase=phase)
 
+        # Memory: 유저 턴 저장
+        mem = _flow_guard.memory_session if _flow_guard else None
+        if mem:
+            try:
+                save_turn(mem, "user", msg)
+            except Exception as e:
+                print(f"⚠️ Memory 저장 실패 (user): {e}")
+
         result = agent(msg)
+        response_text = str(result)
+
+        # Memory: 어시스턴트 턴 저장
+        if mem:
+            try:
+                save_turn(mem, "assistant", response_text[:2000])
+            except Exception as e:
+                print(f"⚠️ Memory 저장 실패 (assistant): {e}")
 
         # 버튼 생성
         current_phase = _flow_guard.current_phase if _flow_guard else "init"
         collected = _flow_guard.collected_data if _flow_guard else {}
-        buttons = _extract_buttons(str(result), current_phase, collected)
+        buttons = _extract_buttons(response_text, current_phase, collected)
 
         # Phase 상태 + 수집 데이터를 응답에 포함
         phase_info = ""
         if _flow_guard:
             phase_info = f"\n\n---\n📍 Phase: `{_flow_guard.current_phase}` | 데이터: {list(_flow_guard.collected_data.keys())}"
 
-        return ChatResponse(response=str(result) + phase_info, buttons=buttons, phase=current_phase)
+        return ChatResponse(response=response_text + phase_info, buttons=buttons, phase=current_phase)
     except Exception as e:
         return ChatResponse(response=f"오류 발생: {e}")
 
