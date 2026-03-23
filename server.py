@@ -136,26 +136,20 @@ def _handle_graph(message: str, session_id: str, context: dict | None = None) ->
     state = _graph_app.get_state(config)
 
     if state.tasks:
-        # interrupt 상태 → resume
-        task_name = state.tasks[0].name if state.tasks else ""
-        print(f"🔄 [resume] task={task_name}, msg='{message[:50]}'")
+        # interrupt 상태 (wait_*) → resume
+        print(f"🔄 [resume] msg='{message[:50]}'")
         result = _graph_app.invoke(Command(resume=message), config)
     else:
-        # 새 대화 또는 완료 후 새 메시지
-        prev_collected = {}
-        prev_messages = []
-        prev_phase = "idle"
-        if state.values:
-            prev_collected = state.values.get("collected", {})
-            prev_messages = state.values.get("messages", [])
-            prev_phase = state.values.get("phase", "idle")
-        print(f"📥 [new invoke] msg='{message[:50]}' prev_collected_keys={list(prev_collected.keys())} prev_msgs={len(prev_messages)} thread={thread_id}")
+        # 새 메시지 → agent_node 실행
+        prev_messages = state.values.get("messages", []) if state.values else []
+        print(f"📥 [new] msg='{message[:50]}' prev_msgs={len(prev_messages)} thread={thread_id}")
 
         result = _graph_app.invoke({
             "messages": prev_messages + [HumanMessage(content=message)],
-            "collected": prev_collected,
-            "phase": prev_phase,
-            "action": "",
+            "flow_state": state.values.get("flow_state", "idle") if state.values else "idle",
+            "flow_data": state.values.get("flow_data", {}) if state.values else {},
+            "flow_pending_target": state.values.get("flow_pending_target") if state.values else None,
+            "flow_history": state.values.get("flow_history", []) if state.values else [],
             "response_message": "",
             "response_buttons": [],
             "response_mode": "idle",
