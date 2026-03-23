@@ -292,8 +292,19 @@ header h1 { font-size: 18px; font-weight: 600; }
 <body>
 <header>
   <h1>어스플러스 상품 세팅 에이전트 (LangGraph)</h1>
-  <button id="reset-btn" onclick="resetChat()">새로 시작</button>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <button id="token-btn" onclick="toggleToken()" style="background:#16213e;color:white;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:12px;">토큰 설정</button>
+    <span id="token-status" style="font-size:11px;color:#aaa;"></span>
+    <button id="reset-btn" onclick="resetChat()">새로 시작</button>
+  </div>
 </header>
+<div id="token-area" style="display:none;padding:8px 24px;background:#f0f0f0;border-bottom:1px solid #ddd;">
+  <div style="font-size:12px;color:#666;margin-bottom:4px;">관리자센터 sessionStorage에서 토큰을 복사해주세요 (dev tools > Application > Session Storage > accessToken)</div>
+  <div style="display:flex;gap:8px;">
+    <input id="token-input" type="text" placeholder="eyJhbGci..." style="flex:1;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:monospace;" />
+    <button onclick="saveToken()" style="background:#1a1a2e;color:white;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;">저장</button>
+  </div>
+</div>
 <div id="chat-container">
   <div class="msg system">상품 세팅을 시작하려면 마스터 이름이나 요청을 입력하세요.</div>
 </div>
@@ -305,6 +316,24 @@ header h1 { font-size: 18px; font-weight: 600; }
 const container = document.getElementById('chat-container');
 const input = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
+
+// 토큰 관리
+function getToken() { return localStorage.getItem('agent_token') || ''; }
+function toggleToken() {
+  const area = document.getElementById('token-area');
+  area.style.display = area.style.display === 'none' ? 'block' : 'none';
+  document.getElementById('token-input').value = getToken();
+}
+function saveToken() {
+  const token = document.getElementById('token-input').value.trim();
+  if (token) {
+    localStorage.setItem('agent_token', token);
+    document.getElementById('token-status').textContent = '토큰 저장됨';
+    document.getElementById('token-area').style.display = 'none';
+  }
+}
+// 초기 상태 표시
+if (getToken()) document.getElementById('token-status').textContent = '토큰 있음';
 
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
 
@@ -332,10 +361,13 @@ async function send() {
   sendBtn.disabled = true;
   const loading = addMsg('생각 중', 'agent loading');
   try {
+    const token = getToken();
+    const body = { message: text };
+    if (token) body.context = { token };
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     loading.remove();
