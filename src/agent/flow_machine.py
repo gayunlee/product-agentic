@@ -122,9 +122,21 @@ def _llm_understand(message: str, history: list[dict], context_summary: str) -> 
             inferenceConfig={"maxTokens": 300, "temperature": 0},
         )
         text = response["output"]["message"]["content"][0]["text"].strip()
+        raw_text = text  # JSON 파싱 실패 시 원문 보존
         if "```" in text:
             text = text.split("```")[1].replace("json", "").strip()
         return json.loads(text)
+    except json.JSONDecodeError:
+        # LLM이 JSON 대신 자연어를 반환한 경우 → chat으로 처리
+        print(f"⚠️ LLM JSON 파싱 실패 → chat으로 처리")
+        # raw_text에서 message 추출 시도
+        msg = raw_text if 'raw_text' in dir() else "죄송합니다. 다시 말씀해주세요."
+        # "message": "..." 패턴 추출 시도
+        import re
+        msg_match = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text if 'raw_text' in dir() else "", re.DOTALL)
+        if msg_match:
+            msg = msg_match.group(1).replace("\\n", "\n").replace('\\"', '"')
+        return {"action": "chat", "params": {}, "message": msg}
     except Exception as e:
         print(f"⚠️ LLM 이해 실패: {e}")
         return {"action": "chat", "params": {}, "message": "죄송합니다. 다시 말씀해주세요."}
