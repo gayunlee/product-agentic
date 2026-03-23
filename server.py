@@ -137,10 +137,11 @@ def _handle_graph(message: str, session_id: str, context: dict | None = None) ->
 
     if state.tasks:
         # interrupt 상태 → resume
+        task_name = state.tasks[0].name if state.tasks else ""
+        print(f"🔄 [resume] task={task_name}, msg='{message[:50]}'")
         result = _graph_app.invoke(Command(resume=message), config)
     else:
         # 새 대화 또는 완료 후 새 메시지
-        # 이전 상태에서 collected + messages 보존
         prev_collected = {}
         prev_messages = []
         prev_phase = "idle"
@@ -148,6 +149,7 @@ def _handle_graph(message: str, session_id: str, context: dict | None = None) ->
             prev_collected = state.values.get("collected", {})
             prev_messages = state.values.get("messages", [])
             prev_phase = state.values.get("phase", "idle")
+        print(f"📥 [new invoke] msg='{message[:50]}' prev_collected_keys={list(prev_collected.keys())} prev_msgs={len(prev_messages)} thread={thread_id}")
 
         result = _graph_app.invoke({
             "messages": prev_messages + [HumanMessage(content=message)],
