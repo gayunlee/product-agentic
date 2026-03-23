@@ -17,6 +17,7 @@ from langgraph.types import interrupt
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.agent.flow_machine import FlowMachine
+from langfuse import observe
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def _result_to_interrupt(result) -> dict:
 
 # ── 메인 노드 ──
 
+@observe(name="agent_node")
 def agent_node(state: AgentState) -> dict:
     """FlowMachine을 실행하는 단일 노드.
 

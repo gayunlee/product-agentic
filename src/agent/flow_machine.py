@@ -12,6 +12,7 @@ import boto3
 from dataclasses import dataclass, field
 
 from src.tools.admin_api import _client, _safe_request
+from langfuse import observe
 
 # ── LLM 대화 관리자 ──
 _bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
@@ -99,6 +100,7 @@ message: 유저에게 자연스럽게 안내하는 텍스트. 마크다운 사�
 action이 "chat"이면 message에 대화 응답을 넣으세요."""
 
 
+@observe(name="llm_understand")
 def _llm_understand(message: str, history: list[dict], context_summary: str) -> dict:
     """LLM이 대화를 이해하고 액션을 결정."""
     try:
@@ -142,6 +144,7 @@ def _llm_understand(message: str, history: list[dict], context_summary: str) -> 
         return {"action": "chat", "params": {}, "message": "죄송합니다. 다시 말씀해주세요."}
 
 
+@observe(name="llm_format")
 def _llm_format(results: dict, context_summary: str) -> str:
     """LLM이 실행 결과를 자연어로 포맷."""
     try:
@@ -340,6 +343,7 @@ class FlowMachine:
     # 메인 핸들러
     # ══════════════════════════════════════
 
+    @observe(name="flow_handle")
     def handle(self, message: str, context: dict | None = None) -> Response:
         msg = message.strip()
         print(f"📍 state={self.state}, msg={msg[:40]}")
