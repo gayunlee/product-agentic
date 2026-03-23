@@ -111,8 +111,11 @@ def _api_get(path: str, params: dict | None = None):
     _log_api({"method": "GET", "path": path, "params": params})
     if MOCK_MODE:
         return _mock_api_get(path, params or {})
+    from src.tools.admin_api import ADMIN_BASE, ADMIN_TOKEN
+    print(f"🌐 [API GET] {ADMIN_BASE}{path} params={params} token_len={len(ADMIN_TOKEN)}")
     with _client() as c:
         r = c.get(path, params=params or {})
+        print(f"🌐 [API GET] status={r.status_code} body={r.text[:200]}")
         return _safe_request(r)
 
 
@@ -221,6 +224,28 @@ MANAGER_PROMPT = """당신은 어스플러스 관리자센터 상품 세팅 AI �
        └─ 상품 페이지 N개 (각각 독립적인 결제 접점)
             └─ 상품 옵션 N개 (실제 구매 단위)
 ```
+- 마스터 그룹 ≠ 오피셜클럽. 마스터 그룹은 이름만, 오피셜클럽은 상세 프로필.
+- 오피셜클럽 1개에 상품 페이지 여러 개 가능
+- 상품 페이지 1개에 상품 옵션 여러 개 가능
+- "상품 옵션 추가" 시 반드시 **어떤 상품 페이지**에 추가할지 특정해야 함
+
+## 도메인 지식
+- **마스터(오피셜클럽)**: 콘텐츠 크리에이터의 멤버십 공간. 공개/비공개/준비중 상태.
+- **시리즈**: 마스터의 콘텐츠 묶음. 파트너센터에서 생성. 상품 옵션 연결 시 필수.
+- **상품 페이지**: 고객이 보는 결제 페이지. 구독상품/단건상품.
+- **상품 옵션**: 실제 구매 단위. 상품명, 금액, 결제주기, 시리즈 연결, 프로모션 설정.
+- **활성화**: 상품 노출 ON → 순서 설정 → 페이지 공개 → 메인 상품 설정 (4단계)
+- **선행 조건**: 오피셜클럽 → 시리즈 → 상품 페이지 → 상품 옵션 (순서 필수)
+
+## 관리자센터 페이지 구조
+- 상품 페이지 목록: /product (마스터별 필터링)
+- 상품 페이지 생성: /product/page/create (정보+이미지 한번에)
+- 상품 페이지 상세: /product/page/{id}?tab=settings|options|letters|caution
+- 상품 옵션 등록: /product/create?productPageId={id}&productType={type}&masterId={cmsId}
+- 상품 옵션 수정: /product/{productId}?productPageId={id}&productType={type}&masterId={cmsId}
+- 오피셜클럽 관리: /official-club
+- 마스터 페이지 관리: /master/page
+- 메인 상품 페이지 관리: /product/page/list
 
 ## 사용 가능한 액션
 - search_master: 마스터 정보만 확인 (params: master_name)
@@ -228,25 +253,40 @@ MANAGER_PROMPT = """당신은 어스플러스 관리자센터 상품 세팅 AI �
 - check_series: 시리즈 확인 (params: master_name)
 - list_pages: 상품 페이지 목록 조회 (params: master_name, filter: all/active/inactive)
 - list_options: 특정 페이지의 상품 옵션 목록 (params: master_name, page_code)
-- setup: 상품 전체 세팅 (params: master_name, product_type)
-- create_option: 기존 페이지에 옵션 추가 (params: master_name, page_code)
+- setup: 상품 전체 세팅 (페이지+옵션+활성화) (params: master_name, product_type)
+- create_option: 기존 페이지에 옵션 추가 (params: master_name, page_code) ← "옵션 추가/등록" 요청 시
 - activate: 활성화 실행 (params: master_name)
-- diagnose: 노출 문제 진단 (params: master_name)
+- diagnose: 노출 문제 진단 (params: master_name) ← "안 보여", "왜 안 되는지" 요청 시에만
 - toggle_display: 상품 옵션 공개/비공개 변경 (params: master_name, option_name, action: show/hide)
 - toggle_page: 상품 페이지 공개/비공개 변경 (params: master_name, page_code, action: show/hide)
-- edit: 수정 안내 (params: master_name, target: page/option)
+- edit: 수정 안내 (params: master_name, target: page/option, page_code) ← "수정/변경/편집" 요청 시
 - go_back: 이전 단계로 (params: target: master/page)
 - confirm: 유저가 작업 완료 알림
 - chat: 액션 없이 대화만
 
+⚠️ 액션 선택 가이드:
+- "상품 만들래/세팅해줘" → setup (전체 프로세스)
+- "옵션 추가/등록해줘" → create_option (기존 페이지에 추가)
+- "옵션 수정/변경하려고" → edit (target: option)
+- "페이지 수정/설정 바꾸려고" → edit (target: page)
+- "마스터 있어?/검색해줘" → search_master (정보 확인만)
+- "상품페이지 뭐있어?" → list_pages (목록 조회)
+- "옵션 비공개해줘/공개해줘" → toggle_display
+- "페이지 비공개해줘/공개해줘" → toggle_page
+- "안 보여/왜 안 나와" → diagnose (노출 문제 진단)
+
 ⚠️ 맥락 연결 중요:
-- 이전 대화에서 "상품페이지 등록/세팅" 얘기가 있었고 유저가 마스터명만 답하면 → setup
+- 이전 대화에서 "상품페이지 등록/세팅" 얘기가 있었고 유저가 마스터명만 답하면 → setup (search_master 아님)
 - 이전에 "옵션 추가" 얘기가 있었고 유저가 마스터명만 답하면 → create_option
+- 이전에 "진단해줘" 얘기가 있었고 유저가 마스터명만 답하면 → diagnose
 - 마스터명만 입력되면 직전 맥락의 action을 이어가야 함
 
 ## 응답 형식
 반드시 JSON만 출력:
-{"action": "...", "params": {...}, "message": "유저에게 보여줄 안내 메시지"}"""
+{"action": "...", "params": {...}, "message": "유저에게 보여줄 안내 메시지"}
+
+message: 유저에게 자연스럽게 안내하는 텍스트. 마크다운 사용 가능.
+action이 "chat"이면 message에 대화 응답을 넣으세요."""
 
 # 의도 → 목표 phase
 INTENT_TO_PHASE = {
@@ -289,7 +329,7 @@ KEY_TO_FILLER = {
 
 
 def classify_node(state: AgentState) -> dict:
-    """LLM으로 유저 의도를 분류하고 액션을 결정."""
+    """LLM이 대화를 읽고 의도를 분류. 모든 라우팅 결정은 LLM이 한다."""
     messages = state["messages"]
     collected = state.get("collected", {})
     phase = state.get("phase", "idle")
@@ -304,7 +344,7 @@ def classify_node(state: AgentState) -> dict:
     if not last_msg:
         return {"action": "chat", "response_message": "무엇을 도와드릴까요?"}
 
-    # 버튼 클릭 (JSON)
+    # 버튼 클릭 (JSON) — 유일한 하드코딩 분기
     if last_msg.strip().startswith("{"):
         try:
             parsed = json.loads(last_msg)
@@ -315,34 +355,29 @@ def classify_node(state: AgentState) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Fast match (확실한 패턴)
-    fast = _fast_match(last_msg)
-    if fast:
-        action = fast["action"]
-        params = fast.get("params", {})
-        if params.get("master_name"):
-            collected = {**collected, "_requested_master": params["master_name"]}
-        return {"action": action, "collected": collected}
-
-    # LLM 의도 분류
+    # ── LLM이 의도 분류 ──
     llm = _create_llm()
+
+    # 현재 상태 요약
     context_parts = [f"현재 단계: {phase}"]
     if collected.get("master_name"):
         context_parts.append(f"마스터: {collected['master_name']} (cmsId: {collected.get('master_cms_id', '')})")
     if collected.get("product_page_title"):
-        context_parts.append(f"상품 페이지: {collected['product_page_title']}")
+        context_parts.append(f"상품 페이지: {collected['product_page_title']} (코드: {collected.get('product_page_code', '')})")
     if collected.get("product_ids"):
         context_parts.append(f"등록된 옵션: {len(collected['product_ids'])}개")
+    if collected.get("product_type"):
+        context_parts.append(f"상품 타입: {collected['product_type']}")
     context_summary = "\n".join(context_parts)
 
     system_text = MANAGER_PROMPT
     if context_summary:
         system_text += f"\n\n## 현재 상태\n{context_summary}"
 
-    # 최근 대화 히스토리
+    # 대화 히스토리 (LLM이 맥락을 이해하도록)
     recent = []
     history_msgs = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
-    for m in history_msgs[-6:]:
+    for m in history_msgs[-8:]:
         role = "user" if isinstance(m, HumanMessage) else "assistant"
         content = m.content[:500] if isinstance(m.content, str) else str(m.content)[:500]
         recent.append(HumanMessage(content=content) if role == "user" else AIMessage(content=content))
@@ -353,6 +388,7 @@ def classify_node(state: AgentState) -> dict:
         if "```" in text:
             text = text.split("```")[1].replace("json", "").strip()
         understood = json.loads(text)
+        print(f"🧠 LLM 분류: {understood.get('action')} params={understood.get('params', {})}")
     except Exception as e:
         logger.warning(f"LLM 이해 실패: {e}")
         understood = {"action": "chat", "params": {}, "message": "죄송합니다. 다시 말씀해주세요."}
@@ -361,12 +397,11 @@ def classify_node(state: AgentState) -> dict:
     params = understood.get("params", {})
     llm_message = understood.get("message", "")
 
-    # 파라미터 저장
+    # LLM이 추출한 파라미터를 collected에 저장
     new_collected = {**collected}
     if params.get("master_name"):
         master_name = params["master_name"]
         if master_name != collected.get("master_name", ""):
-            # 마스터 변경 → 관련 데이터 초기화
             for key in ["master_cms_id", "master_name", "master_id", "master_public_type",
                         "series_ids", "series_titles", "product_page_id", "product_page_code",
                         "product_page_title", "_all_pages", "product_ids"]:
@@ -374,45 +409,18 @@ def classify_node(state: AgentState) -> dict:
         new_collected["_requested_master"] = master_name
     if params.get("product_type"):
         new_collected["product_type"] = params["product_type"]
+    if params.get("page_code"):
+        new_collected["_requested_page_code"] = params["page_code"]
+    if params.get("target"):
+        new_collected["_edit_target"] = params["target"]
+    if params.get("option_name"):
+        new_collected["_option_name"] = params["option_name"]
 
     return {
         "action": action,
         "collected": new_collected,
         "response_message": llm_message,
     }
-
-
-def _fast_match(msg: str) -> dict | None:
-    """확실한 패턴은 LLM 없이 바로 처리."""
-    import re
-    noise = {"마스터", "상품", "옵션", "추가", "등록", "해줘", "할래", "하고", "싶어", "페이지", "에", "세팅", "만들", "려고"}
-
-    if any(kw in msg for kw in ["옵션 추가", "옵션 등록", "옵션추가", "옵션등록", "옵션 하나 더", "옵션하나더"]):
-        words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
-        master = next((w for w in words if w not in noise and len(w) >= 2), "")
-        return {"action": "create_option", "params": {"master_name": master}}
-
-    if any(kw in msg for kw in ["세팅해", "만들려고", "만들래", "상품 만들", "상품만들"]):
-        words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
-        master = next((w for w in words if w not in noise and len(w) >= 2), "")
-        return {"action": "setup", "params": {"master_name": master}}
-
-    if any(kw in msg for kw in ["완료했", "완료"]):
-        return {"action": "confirm", "params": {}}
-
-    if "activate" in msg or "활성화" in msg:
-        return {"action": "do_activate", "params": {}}
-
-    if any(kw in msg for kw in ["안 보여", "안보여", "노출", "진단", "왜 안", "왜 그래"]):
-        import re
-        words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
-        diag_noise = {"상품", "상품이", "페이지", "고객", "한테", "노출", "진단", "안", "보여", "안보여",
-                       "왜", "그래", "확인", "해줘", "되고", "있는지", "에게", "보이는데", "고객한테", "뭐가",
-                       "고객에게", "노출되고", "마스터", "상태", "문제", "이유", "확인해줘", "알려줘", "봐줘"}
-        master = next((w for w in words if w not in diag_noise and len(w) >= 2 and not w.endswith("줘")), "")
-        return {"action": "diagnose", "params": {"master_name": master}}
-
-    return None
 
 
 def resolve_node(state: AgentState) -> dict:
@@ -466,7 +474,11 @@ def resolve_node(state: AgentState) -> dict:
     if action == "toggle_page":
         return {"phase": "toggle_page"}
 
-    # chat
+    # edit — 수정 안내 (페이지 이동)
+    if action == "edit":
+        return {"phase": "edit"}
+
+    # chat — LLM 메시지 그대로
     return {"phase": "chat"}
 
 
@@ -503,8 +515,9 @@ def check_master_node(state: AgentState) -> dict:
         collected = {**collected, "_requested_master": answer}
 
     name = collected.get("_requested_master", "")
-    logger.info(f"search_master: '{name}'")
+    print(f"🔍 [check_master] name='{name}'")
     result = _api_get("/v1/masters", {"searchKeyword": name, "searchCategory": "NAME"})
+    print(f"🔍 [check_master] result type={type(result).__name__}, value={str(result)[:300]}")
 
     if isinstance(result, dict) and result.get("error"):
         return _response(
@@ -950,6 +963,7 @@ def diagnose_node(state: AgentState) -> dict:
     # 1. 마스터 존재/공개 상태
     if not cms_id:
         result = _api_get("/v1/masters", {"searchKeyword": master_name, "searchCategory": "NAME"})
+        print(f"🔍 [diagnose] search_masters('{master_name}') → type={type(result).__name__}, value={str(result)[:300]}")
         if isinstance(result, dict) and result.get("error"):
             return _response(collected, "idle", f"API 오류: {result.get('guide', result.get('response_body', '알 수 없는 오류')[:200])}", mode="diagnose")
         if isinstance(result, list) and len(result) > 0:
@@ -1099,6 +1113,72 @@ def toggle_page_node(state: AgentState) -> dict:
     return _response(collected, "idle", "상품 페이지 상태 변경은 관리자센터에서 직접 변경해주세요.")
 
 
+def edit_node(state: AgentState) -> dict:
+    """수정 안내 — 관리자센터 페이지로 이동."""
+    collected = state.get("collected", {})
+    llm_message = state.get("response_message", "")
+    target = collected.get("_edit_target", "option")
+    page_id = collected.get("product_page_id", "")
+    master_id = collected.get("master_cms_id", "")
+    master_name = collected.get("master_name", "")
+    page_title = collected.get("product_page_title", "")
+
+    # 마스터 먼저 확인
+    if not master_id:
+        name = collected.get("_requested_master", "")
+        if name:
+            result = _api_get("/v1/masters", {"searchKeyword": name, "searchCategory": "NAME"})
+            if isinstance(result, list) and len(result) > 0:
+                master = result[0]
+                collected["master_cms_id"] = master.get("cmsId", "")
+                collected["master_name"] = master.get("name", "")
+                master_id = collected["master_cms_id"]
+                master_name = collected["master_name"]
+
+    # 페이지 확인
+    if not page_id and master_id:
+        pages = _api_get("/v1/product-group", {"masterId": master_id})
+        if isinstance(pages, list) and len(pages) > 0:
+            # page_code로 매칭 시도
+            page_code = collected.get("_requested_page_code", "")
+            matched = None
+            if page_code:
+                matched = next((p for p in pages if str(p.get("code", "")) == str(page_code)), None)
+            if not matched and len(pages) == 1:
+                matched = pages[0]
+            if matched:
+                page_id = matched.get("id", "")
+                collected["product_page_id"] = page_id
+                collected["product_page_code"] = matched.get("code", "")
+                collected["product_page_title"] = matched.get("title", "")
+                page_title = collected["product_page_title"]
+
+    buttons = []
+    msg = llm_message or f"**{master_name}** 수정 안내"
+
+    if page_id:
+        if target in ("option", "options"):
+            buttons.append({"type": "navigate", "label": "📦 상품 옵션 관리", "url": f"/product/page/{page_id}?masterId={master_id}&tab=options", "variant": "primary", "description": "상품 옵션을 수정하거나 새 옵션을 등록합니다."})
+        if target in ("page", "settings"):
+            buttons.append({"type": "navigate", "label": "📄 상품 페이지 설정", "url": f"/product/page/{page_id}?masterId={master_id}&tab=settings", "variant": "primary", "description": "페이지 정보, 이미지 등을 수정합니다."})
+        if not buttons:
+            # target 불명확 → 둘 다 제공
+            buttons = [
+                {"type": "navigate", "label": "📄 상품 페이지 설정", "url": f"/product/page/{page_id}?masterId={master_id}&tab=settings", "variant": "primary", "description": "페이지 정보, 이미지 등을 수정합니다."},
+                {"type": "navigate", "label": "📦 상품 옵션 관리", "url": f"/product/page/{page_id}?masterId={master_id}&tab=options", "variant": "primary", "description": "기존 옵션을 수정하거나 새 옵션을 등록합니다."},
+            ]
+    elif master_id:
+        # 페이지 목록에서 선택하게
+        pages = _api_get("/v1/product-group", {"masterId": master_id})
+        if isinstance(pages, list) and len(pages) > 0:
+            rows = "\n".join(f"- **{p.get('title', '')}** (코드: {p.get('code', '')})" for p in pages)
+            msg += f"\n\n어떤 페이지를 수정하시겠어요?\n{rows}"
+    else:
+        msg += "\n\n마스터명을 알려주세요."
+
+    return _response(collected, "idle", msg, buttons=buttons)
+
+
 def chat_node(state: AgentState) -> dict:
     """일반 대화 — LLM 메시지 그대로 반환."""
     collected = state.get("collected", {})
@@ -1155,6 +1235,7 @@ def route_after_resolve(state: AgentState) -> str:
         "toggle_page": "toggle_page",
         "toggle_display_exec": "toggle_display",
         "toggle_page_exec": "toggle_page",
+        "edit": "edit",
         "chat": "chat",
     }
     return phase_to_node.get(phase, "chat")
@@ -1199,6 +1280,7 @@ def build_graph(guardrail_config: dict | None = None) -> StateGraph:
     graph.add_node("list_options", list_options_node)
     graph.add_node("toggle_display", toggle_display_node)
     graph.add_node("toggle_page", toggle_page_node)
+    graph.add_node("edit", edit_node)
     graph.add_node("chat", chat_node)
 
     # 엣지
@@ -1221,6 +1303,7 @@ def build_graph(guardrail_config: dict | None = None) -> StateGraph:
     graph.add_edge("list_options", END)
     graph.add_edge("toggle_display", END)
     graph.add_edge("toggle_page", END)
+    graph.add_edge("edit", END)
     graph.add_edge("chat", END)
 
     return graph
