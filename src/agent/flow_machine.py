@@ -682,8 +682,10 @@ class FlowMachine:
         if not cms_id:
             return Response(message="마스터를 먼저 알려주세요.")
         pages = _api_get("/v1/product-group", {"masterId": cms_id})
+        if isinstance(pages, dict) and pages.get("error"):
+            return Response(message=f"API 오류: {pages.get('guide', pages.get('response_body', ''))}")
         if not isinstance(pages, list):
-            return Response(message="상품 페이지를 조회할 수 없습니다.")
+            return Response(message=f"상품 페이지를 조회할 수 없습니다. (응답: {str(pages)[:100]})")
 
         target = None
         for p in pages:
