@@ -660,8 +660,9 @@ class FlowMachine:
         cms_id = self.data.get("master_cms_id", "")
 
         result = _api_patch("/v1/product/display", {"id": product_id, "isDisplay": is_display})
+        print(f"📍 toggle_display result: {result}")
         if isinstance(result, dict) and result.get("error"):
-            return Response(message=f"⚠️ {label} 처리 실패: {result.get('guide', '')}")
+            return Response(message=f"⚠️ {label} 처리 실패: {result.get('guide', result.get('response_body', ''))}")
 
         return Response(
             message=f"✅ {label} 처리 완료!",
