@@ -103,14 +103,14 @@ action이 "chat"이면 message에 대화 응답을 넣으세요."""
 @observe(name="llm_understand")
 def _llm_understand(message: str, history: list[dict], context_summary: str) -> dict:
     """LLM이 대화를 이해하고 액션을 결정."""
+    raw_text = ""
     try:
         system_text = MANAGER_PROMPT
         if context_summary:
             system_text += f"\n\n## 현재 상태\n{context_summary}"
 
-        # 대화 히스토리를 Bedrock messages 형식으로
         messages = []
-        for h in history[-6:]:  # 최근 6턴만
+        for h in history[-6:]:
             messages.append({
                 "role": h["role"],
                 "content": [{"text": h["content"][:500]}],
@@ -121,24 +121,27 @@ def _llm_understand(message: str, history: list[dict], context_summary: str) -> 
             modelId=_MODEL,
             messages=messages,
             system=[{"text": system_text}],
-            inferenceConfig={"maxTokens": 300, "temperature": 0},
+            inferenceConfig={"maxTokens": 1000, "temperature": 0},
         )
-        text = response["output"]["message"]["content"][0]["text"].strip()
-        raw_text = text  # JSON 파싱 실패 시 원문 보존
+        raw_text = response["output"]["message"]["content"][0]["text"].strip()
+        text = raw_text
         if "```" in text:
             text = text.split("```")[1].replace("json", "").strip()
         return json.loads(text)
     except json.JSONDecodeError:
-        # LLM이 JSON 대신 자연어를 반환한 경우 → chat으로 처리
-        print(f"⚠️ LLM JSON 파싱 실패 → chat으로 처리")
-        # raw_text에서 message 추출 시도
-        msg = raw_text if 'raw_text' in dir() else "죄송합니다. 다시 말씀해주세요."
-        # "message": "..." 패턴 추출 시도
+        print(f"⚠️ LLM JSON 파싱 실패 → message 추출 시도")
         import re
-        msg_match = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text if 'raw_text' in dir() else "", re.DOTALL)
+        # "message": "..." 패턴 추출
+        msg_match = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_text, re.DOTALL)
         if msg_match:
             msg = msg_match.group(1).replace("\\n", "\n").replace('\\"', '"')
-        return {"action": "chat", "params": {}, "message": msg}
+            return {"action": "chat", "params": {}, "message": msg}
+        # action도 추출 시도
+        action_match = re.search(r'"action"\s*:\s*"(\w+)"', raw_text)
+        action = action_match.group(1) if action_match else "chat"
+        # message 추출 실패 → raw_text에서 JSON 부분 제거 후 반환
+        clean = re.sub(r'\{.*', '', raw_text).strip()
+        return {"action": action, "params": {}, "message": clean or "죄송합니다. 다시 말씀해주세요."}
     except Exception as e:
         print(f"⚠️ LLM 이해 실패: {e}")
         return {"action": "chat", "params": {}, "message": "죄송합니다. 다시 말씀해주세요."}
