@@ -890,7 +890,7 @@ class FlowMachine:
             buttons.append({"type": "navigate", "label": "🌐 고객 화면 확인", "url": f"https://dev.us-insight.com/products/group/{page_code}", "variant": "secondary", "description": "고객에게 보이는 화면을 확인합니다."})
 
         return Response(
-            message=f"🎉 **검증 결과:**\n" + "\n".join(checks) + "\n\n**체크리스트:**\n☐ 금액/구성 확인\n☐ 프로모션 확인\n☐ 유의사항 등록\n☐ 마스터 공개 상태 확인",
+            message=f"🎉 **검증 결과:**\n\n" + "\n\n".join(checks) + "\n\n**체크리스트:**\n\n☐ 금액/구성 확인\n\n☐ 프로모션 확인\n\n☐ 유의사항 등록\n\n☐ 마스터 공개 상태 확인",
             buttons=buttons, step=_step_meta("verification"), mode="execute",
         )
 
@@ -1122,9 +1122,19 @@ class FlowMachine:
         if causes:
             cause_text = f"\n\n🎯 **원인**: " + ", ".join(causes)
 
+        # 노출 중인 페이지 버튼
+        if page_id:
+            showing_page = _find_active_page(active_pages) if 'active_pages' in dir() and active_pages else None
+            if showing_page:
+                sp_id = showing_page.get("id", page_id)
+                sp_code = showing_page.get("code", "")
+                buttons.append({"type": "navigate", "label": f"📄 노출 중인 페이지 보기 ({showing_page.get('title', '')})", "url": f"/product/page/{sp_id}?masterId={cms_id}&tab=settings", "variant": "secondary", "description": "현재 노출 중인 상품 페이지를 확인합니다."})
+                if sp_code:
+                    buttons.append({"type": "navigate", "label": "🌐 고객 화면 확인", "url": f"https://dev.us-insight.com/products/group/{sp_code}", "variant": "secondary", "description": "고객에게 보이는 화면을 확인합니다."})
+
         self.state = "idle"
         return Response(
-            message=f"📊 **{self.data.get('master_name', master_name)} 진단 결과**\n\n" + "\n".join(checks) + cause_text,
+            message=f"📊 **{self.data.get('master_name', master_name)} 진단 결과**\n\n" + "\n\n".join(checks) + cause_text,
             buttons=buttons, mode="diagnose",
         )
 
@@ -1234,7 +1244,7 @@ class FlowMachine:
         main_status = main.get("productGroupViewStatus", "") if isinstance(main, dict) and not main.get("error") else ""
         checks.append(f"{'✅' if main_status == 'ACTIVE' else '⚠️'} 메인 상품 페이지: {_status_label(main_status) if main_status else '미설정'}")
 
-        checks_text = "\n".join(checks)
+        checks_text = "\n\n".join(checks)
 
         # 다음 해야 할 작업 결정
         buttons = []
