@@ -1264,10 +1264,13 @@ class FlowMachine:
             if active_pages:
                 page_id = active_pages[0].get("id", "")
             checks.append(f"{'✅' if page_active else '❌'} 상품 페이지: {len(active_pages)}개 공개 / {len(pages)}개 전체")
-            # 히든 페이지 표시
+            # 각 페이지 상세 (히든 여부 포함)
+            for p in pages:
+                hidden_tag = " 🔒히든" if p.get("isHidden") else ""
+                status_tag = _status_label(p.get("status", ""))
+                checks.append(f"  └ {p.get('title', '')} (코드: {p.get('code', '')}, {status_tag}{hidden_tag})")
             if hidden_pages:
-                hidden_names = ", ".join(p.get("title", "") for p in hidden_pages)
-                checks.append(f"👁️ 히든 처리: {len(hidden_pages)}개 ({hidden_names}) — URL 직접 접근만 가능, 구독 탭에 미노출")
+                checks.append(f"💡 히든 페이지는 URL 직접 접근만 가능, 구독 탭에는 미노출")
             # 실제 노출 중인 페이지
             showing = _find_active_page(active_pages)
             if showing:
