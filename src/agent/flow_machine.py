@@ -1251,21 +1251,29 @@ class FlowMachine:
         else:
             checks.append("❌ 메인 상품 페이지: 설정 안 됨")
 
-        # 3. 상품 페이지 공개 상태
+        # 3. 상품 페이지 공개 상태 + 히든 체크
         pages = _api_get("/v1/product-group", {"masterId": cms_id})
         page_active = False
         page_id = ""
         active_pages = []
+        hidden_pages = []
         if isinstance(pages, list) and len(pages) > 0:
             active_pages = [p for p in pages if p.get("status") == "ACTIVE"]
+            hidden_pages = [p for p in pages if p.get("isHidden")]
             page_active = len(active_pages) > 0
             if active_pages:
                 page_id = active_pages[0].get("id", "")
             checks.append(f"{'✅' if page_active else '❌'} 상품 페이지: {len(active_pages)}개 공개 / {len(pages)}개 전체")
+            # 히든 페이지 표시
+            if hidden_pages:
+                hidden_names = ", ".join(p.get("title", "") for p in hidden_pages)
+                checks.append(f"👁️ 히든 처리: {len(hidden_pages)}개 ({hidden_names}) — URL 직접 접근만 가능, 구독 탭에 미노출")
             # 실제 노출 중인 페이지
             showing = _find_active_page(active_pages)
             if showing:
-                checks.append(f"🔴 실제 노출 중: **{showing.get('title', '')}** (코드: {showing.get('code', '')})")
+                is_hidden = showing.get("isHidden", False)
+                hidden_label = " ⚠️ 히든" if is_hidden else ""
+                checks.append(f"🔴 실제 노출 중: **{showing.get('title', '')}** (코드: {showing.get('code', '')}){hidden_label}")
                 page_id = showing.get("id", "")
             else:
                 checks.append("⚠️ 공개 페이지는 있으나 실제 노출 조건을 만족하는 페이지 없음")
@@ -1297,10 +1305,14 @@ class FlowMachine:
             causes.append("마스터가 비공개 상태")
             buttons.append({"type": "navigate", "label": "📋 마스터 관리", "url": "/master/page", "variant": "primary", "description": "마스터 공개 상태를 변경합니다."})
         if not main_active:
-            causes.append("메인 상품 페이지 비활성화")
+            causes.append("메인 상품 페이지 비활성화 → 구독 탭에서 마스터가 안 보임 (히든 페이지는 URL 직접 접근 가능)")
             buttons.append({"type": "navigate", "label": "📋 메인 상품 페이지 관리", "url": "/product/page/list", "variant": "primary", "description": "메인 상품 페이지를 활성화합니다."})
         if not page_active:
             causes.append("상품 페이지 비공개")
+        if hidden_pages:
+            active_hidden = [p for p in hidden_pages if p.get("status") == "ACTIVE"]
+            if active_hidden:
+                causes.append(f"히든 페이지 {len(active_hidden)}개는 URL로만 접근 가능 (구독 탭 미노출)")
 
         cause_text = ""
         if causes:

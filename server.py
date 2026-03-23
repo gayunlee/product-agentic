@@ -124,12 +124,14 @@ def _inject_token(context: dict | None):
         token = context.get("token", "")
         if token:
             import src.tools.admin_api as admin_api
+            # 기존 토큰과 다를 때만 로그
+            if admin_api.ADMIN_TOKEN != token:
+                print(f"🔑 새 토큰 주입: 길이={len(token)} (이전: {len(admin_api.ADMIN_TOKEN)})")
             admin_api.ADMIN_TOKEN = token
-            print(f"🔑 토큰 주입: 길이={len(token)}")
         else:
             print(f"⚠️ context에 token 없음. keys={list(context.keys())}")
     else:
-        print("⚠️ context 없음")
+        print("⚠️ context 없음 → .env 토큰 사용")
 
 
 def _handle_graph(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
