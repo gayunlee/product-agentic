@@ -403,6 +403,15 @@ def _fast_match(msg: str) -> dict | None:
     if "activate" in msg or "활성화" in msg:
         return {"action": "do_activate", "params": {}}
 
+    if any(kw in msg for kw in ["안 보여", "안보여", "노출", "진단", "왜 안", "왜 그래"]):
+        import re
+        words = re.findall(r'[가-힣a-zA-Z0-9_]+', msg)
+        diag_noise = {"상품", "상품이", "페이지", "고객", "한테", "노출", "진단", "안", "보여", "안보여",
+                       "왜", "그래", "확인", "해줘", "되고", "있는지", "에게", "보이는데", "고객한테", "뭐가",
+                       "고객에게", "노출되고", "마스터", "상태", "문제", "이유", "확인해줘", "알려줘", "봐줘"}
+        master = next((w for w in words if w not in diag_noise and len(w) >= 2 and not w.endswith("줘")), "")
+        return {"action": "diagnose", "params": {"master_name": master}}
+
     return None
 
 
@@ -932,8 +941,8 @@ def diagnose_node(state: AgentState) -> dict:
             "mode": "diagnose",
             "step": _step_meta("check_master"),
         })
-        collected = {**collected, "_requested_master": answer}
-        return {"collected": collected, "phase": "diagnose"}
+        master_name = str(answer)
+        collected = {**collected, "_requested_master": master_name}
 
     cms_id = collected.get("master_cms_id", "")
     checks = []
