@@ -1093,6 +1093,7 @@ class FlowMachine:
         pages = _api_get("/v1/product-group", {"masterId": cms_id})
         page_active = False
         page_id = ""
+        active_pages = []
         if isinstance(pages, list) and len(pages) > 0:
             active_pages = [p for p in pages if p.get("status") == "ACTIVE"]
             page_active = len(active_pages) > 0
@@ -1144,14 +1145,13 @@ class FlowMachine:
             cause_text = f"\n\n🎯 **원인**: " + ", ".join(causes)
 
         # 노출 중인 페이지 버튼
-        if page_id:
-            showing_page = _find_active_page(active_pages) if 'active_pages' in dir() and active_pages else None
-            if showing_page:
-                sp_id = showing_page.get("id", page_id)
-                sp_code = showing_page.get("code", "")
-                buttons.append({"type": "navigate", "label": f"📄 노출 중인 페이지 보기 ({showing_page.get('title', '')})", "url": f"/product/page/{sp_id}?masterId={cms_id}&tab=settings", "variant": "secondary", "description": "현재 노출 중인 상품 페이지를 확인합니다."})
-                if sp_code:
-                    buttons.append({"type": "navigate", "label": "🌐 고객 화면 확인", "url": f"https://dev.us-insight.com/products/group/{sp_code}", "variant": "secondary", "description": "고객에게 보이는 화면을 확인합니다."})
+        showing_page = _find_active_page(active_pages) if active_pages else None
+        if showing_page:
+            sp_id = showing_page.get("id", page_id)
+            sp_code = showing_page.get("code", "")
+            buttons.append({"type": "navigate", "label": f"📄 노출 중인 페이지 보기 ({showing_page.get('title', '')})", "url": f"/product/page/{sp_id}?masterId={cms_id}&tab=settings", "variant": "secondary", "description": "현재 노출 중인 상품 페이지를 확인합니다."})
+            if sp_code:
+                buttons.append({"type": "navigate", "label": "🌐 고객 화면 확인", "url": f"https://dev.us-insight.com/products/group/{sp_code}", "variant": "secondary", "description": "고객에게 보이는 화면을 확인합니다."})
 
         self.state = "idle"
         return Response(
