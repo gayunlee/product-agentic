@@ -28,21 +28,13 @@ PREREQUISITES: dict[str, list[str]] = {
     "get_product_page_list": ["master_id"],
     "get_product_page_detail": ["product_page_id"],
     "get_product_list_by_page": ["product_page_id"],
+    "get_community_settings": ["cms_id"],
 
-    # 생성 계열 — 사전조건 체인
-    "create_master_group": [],
-    "create_series": ["master_id"],
-    "create_product_page": ["master_id", "series_ids"],
-    "create_product": ["product_page_id", "series_ids"],
-
-    # 활성화 계열 — 상품이 존재해야
+    # 변경 계열 — 상품이 존재해야
     "update_product_display": ["product_id"],
-    "update_product_sequence": ["product_page_id", "product_ids"],
     "update_product_page_status": ["product_page_id"],
+    "update_product_page": ["product_page_id"],
     "update_main_product_setting": ["master_id"],
-
-    # 검증
-    "verify_product_setup": ["master_id", "product_page_id"],
 }
 
 # 사전조건 체인 (사람이 읽기 쉬운 설명)
