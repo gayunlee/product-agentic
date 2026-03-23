@@ -950,6 +950,8 @@ def diagnose_node(state: AgentState) -> dict:
     # 1. 마스터 존재/공개 상태
     if not cms_id:
         result = _api_get("/v1/masters", {"searchKeyword": master_name, "searchCategory": "NAME"})
+        if isinstance(result, dict) and result.get("error"):
+            return _response(collected, "idle", f"API 오류: {result.get('guide', result.get('response_body', '알 수 없는 오류')[:200])}", mode="diagnose")
         if isinstance(result, list) and len(result) > 0:
             master = result[0]
             cms_id = master.get("cmsId", "")
@@ -958,7 +960,7 @@ def diagnose_node(state: AgentState) -> dict:
             collected["master_public_type"] = master.get("publicType", "")
 
     if not cms_id:
-        return _response(collected, "check_master", f"'{master_name}' 마스터를 찾을 수 없습니다.", mode="diagnose")
+        return _response(collected, "idle", f"'{master_name}' 마스터를 찾을 수 없습니다.", mode="diagnose")
 
     public_type = collected.get("master_public_type", "")
     is_public = public_type == "PUBLIC"

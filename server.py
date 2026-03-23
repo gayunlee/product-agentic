@@ -140,15 +140,19 @@ def _handle_graph(message: str, session_id: str, context: dict | None = None) ->
         result = _graph_app.invoke(Command(resume=message), config)
     else:
         # 새 대화 또는 완료 후 새 메시지
-        # 이전 상태에서 collected 보존
+        # 이전 상태에서 collected + messages 보존
         prev_collected = {}
+        prev_messages = []
+        prev_phase = "idle"
         if state.values:
             prev_collected = state.values.get("collected", {})
+            prev_messages = state.values.get("messages", [])
+            prev_phase = state.values.get("phase", "idle")
 
         result = _graph_app.invoke({
-            "messages": [HumanMessage(content=message)],
+            "messages": prev_messages + [HumanMessage(content=message)],
             "collected": prev_collected,
-            "phase": state.values.get("phase", "idle") if state.values else "idle",
+            "phase": prev_phase,
             "action": "",
             "response_message": "",
             "response_buttons": [],
