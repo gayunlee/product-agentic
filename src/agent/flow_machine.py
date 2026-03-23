@@ -1356,10 +1356,56 @@ class FlowMachine:
 
     def _handle_edit_request(self, msg: str) -> Response:
         """수정/편집 요청 → 현재 맥락의 관리자센터 페이지로 안내."""
-        page_id = self.data.get("product_page_id", "")
         master_id = self.data.get("master_cms_id", "")
         master_name = self.data.get("master_name", "")
+
+        # 마스터 없으면 검색
+        if not master_id:
+            name = self.data.get("_requested_master", "")
+            if name:
+                result = _api_get("/v1/masters", {"searchKeyword": name, "searchCategory": "NAME"})
+                if isinstance(result, list) and len(result) > 0:
+                    master = result[0]
+                    self.data["master_cms_id"] = master.get("cmsId", "")
+                    self.data["master_name"] = master.get("name", "")
+                    master_id = self.data["master_cms_id"]
+                    master_name = self.data["master_name"]
+            if not master_id:
+                return Response(message="마스터명을 알려주세요.")
+
+        # 페이지 확인
+        page_id = self.data.get("product_page_id", "")
         page_title = self.data.get("product_page_title", "")
+
+        if not page_id:
+            pages = _api_get("/v1/product-group", {"masterId": master_id})
+            if isinstance(pages, list) and len(pages) > 0:
+                # 메시지에서 페이지명 매칭
+                matched = None
+                for p in pages:
+                    title = p.get("title", "")
+                    if title and title in msg:
+                        matched = p
+                        break
+                # "노출중인" → 실제 노출 페이지 찾기
+                if not matched and ("노출" in msg or "현재" in msg):
+                    active = [p for p in pages if p.get("status") == "ACTIVE"]
+                    showing = _find_active_page(active)
+                    if showing:
+                        matched = showing
+                # 1개면 자동 선택
+                if not matched and len(pages) == 1:
+                    matched = pages[0]
+
+                if matched:
+                    page_id = matched.get("id", "")
+                    page_title = matched.get("title", "")
+                    self.data["product_page_id"] = page_id
+                    self.data["product_page_title"] = page_title
+                    self.data["product_page_code"] = matched.get("code", "")
+                else:
+                    rows = "\n".join(f"- **{p.get('title', '')}** (코드: {p.get('code', '')})" for p in pages)
+                    return Response(message=f"어떤 페이지를 수정하시겠어요?\n{rows}")
 
         buttons = []
         if page_id:
@@ -1369,9 +1415,8 @@ class FlowMachine:
             ])
 
         return Response(
-            message=f"**{master_name}** > **{page_title}** 수정 페이지입니다.",
+            message=f"**{master_name}** > **{page_title}** 수정",
             buttons=buttons,
-            step=_step_meta(self.state.replace("wait_create_", "guide_create_").replace("wait_", "") if self.state in STATE_TO_STEP else "guide_create_option"),
         )
 
     # ══════════════════════════════════════
