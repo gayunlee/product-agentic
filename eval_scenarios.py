@@ -1,7 +1,8 @@
 """
 에이전트 평가 시나리오.
-mock 모드로 여러 시나리오를 실행하고 Langfuse에 trace를 쌓은 뒤,
-Tool 호출 순서/파라미터를 자동 평가.
+
+LangGraph 기반 에이전트를 mock 모드로 멀티턴 실행하고,
+Phase 방문 순서 + API 호출 패턴 + 버튼 유효성을 자동 평가.
 
 Usage:
     MOCK_MODE=true uv run python eval_scenarios.py
@@ -42,16 +43,14 @@ if LANGFUSE_PK and LANGFUSE_SK:
 else:
     print("⚠️  Langfuse 키 없음. 트레이싱 없이 실행합니다.")
 
-from src.agent.product_agent import create_product_agent
-from server import _extract_buttons
+from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
-# AgentCore Evaluation (--agentcore 플래그로 활성화)
-from strands_evals.telemetry import StrandsEvalsTelemetry
-from bedrock_agentcore.evaluation.span_to_adot_serializer import convert_strands_to_adot
+from src.agent.graph import create_app, reset_api_log, get_api_log, get_phase_log
 
 
 # ──────────────────────────────────────────────
-# 시나리오 로드 (scenarios/ 폴더에서)
+# 시나리오 로드
 # ──────────────────────────────────────────────
 
 def load_scenarios_from_files() -> list[dict]:
@@ -73,14 +72,10 @@ def load_scenarios_from_files() -> list[dict]:
 def parse_scenario_file(path: Path, category: str) -> dict | None:
     """시나리오 .md 파일에서 핵심 정보를 추출."""
     text = path.read_text(encoding="utf-8")
+    scenario_id = path.stem
 
-    # 시나리오 ID 추출 (파일명에서)
-    scenario_id = path.stem  # S001_구독상품_전체_세팅
-
-    # 사용자 입력 추출
     input_match = re.search(r'## 사용자 입력\s*\n+>\s*"(.+?)"', text)
     if not input_match:
-        # 변형이 여러 개인 경우 (S200 탈옥)
         input_match = re.search(r'> 변형 1:\s*"(.+?)"', text)
     if not input_match:
         print(f"  ⚠️ {path.name}: 사용자 입력 파싱 실패")
@@ -88,19 +83,36 @@ def parse_scenario_file(path: Path, category: str) -> dict | None:
 
     user_input = input_match.group(1)
 
-    # required_tools 추출 (strands-evals Case 블록에서)
-    tools_match = re.search(r'"required_tools":\s*\[([^\]]*)\]', text)
-    required_tools = []
-    if tools_match:
-        required_tools = [t.strip().strip('"').strip("'") for t in tools_match.group(1).split(",") if t.strip()]
+    # expected_phases 추출 (LangGraph용)
+    phases_match = re.search(r'"expected_phases":\s*\[([^\]]*)\]', text)
+    expected_phases = []
+    if phases_match:
+        expected_phases = [t.strip().strip('"').strip("'") for t in phases_match.group(1).split(",") if t.strip()]
 
-    # forbidden_tools 추출
+    # expected_tools (레거시 호환 + LangGraph)
+    tools_match = re.search(r'"expected_tools":\s*\[([^\]]*)\]', text)
+    expected_tools = []
+    if tools_match:
+        expected_tools = [t.strip().strip('"').strip("'") for t in tools_match.group(1).split(",") if t.strip()]
+
+    # forbidden_tools
     forbidden_match = re.search(r'"forbidden_tools":\s*\[([^\]]*)\]', text)
     forbidden_tools = []
     if forbidden_match:
         forbidden_tools = [t.strip().strip('"').strip("'") for t in forbidden_match.group(1).split(",") if t.strip()]
 
-    # 난이도 추출
+    # max_turns (멀티턴 시나리오)
+    turns_match = re.search(r'"max_turns":\s*(\d+)', text)
+    max_turns = int(turns_match.group(1)) if turns_match else 8
+
+    # should_complete (플로우가 완주해야 하는지)
+    complete_match = re.search(r'"should_complete":\s*(true|false)', text, re.IGNORECASE)
+    should_complete = complete_match.group(1).lower() == "true" if complete_match else None
+
+    # expected_final_phase
+    final_phase_match = re.search(r'"expected_final_phase":\s*"([^"]+)"', text)
+    expected_final_phase = final_phase_match.group(1) if final_phase_match else None
+
     difficulty_match = re.search(r'\*\*난이도\*\*:\s*(\w+)', text)
     difficulty = difficulty_match.group(1) if difficulty_match else "medium"
 
@@ -109,230 +121,305 @@ def parse_scenario_file(path: Path, category: str) -> dict | None:
         "category": category,
         "session_id": f"eval-{scenario_id}",
         "messages": [user_input],
-        "expected_tools": required_tools,
+        "expected_phases": expected_phases,
+        "expected_tools": expected_tools,
         "forbidden_tools": forbidden_tools,
+        "max_turns": max_turns,
+        "should_complete": should_complete,
+        "expected_final_phase": expected_final_phase,
         "difficulty": difficulty,
     }
 
 
+# API path → Tool name 매핑
+def _api_calls_to_tools(api_log: list[dict]) -> list[str]:
+    """API 호출 로그를 Tool name으로 변환."""
+    tools = []
+    for call in api_log:
+        path = call.get("path", "")
+        method = call.get("method", "GET")
+
+        if "/main-product-group" in path:
+            tools.append("update_main_product_setting" if method == "PATCH" else "get_master_detail")
+        elif "/v1/product-group/status" in path:
+            tools.append("update_product_page_status")
+        elif "/v1/product/display" in path:
+            tools.append("update_product_display")
+        elif "/sequence" in path:
+            tools.append("update_product_sequence")
+        elif "/v1/product/group/" in path:
+            tools.append("get_product_list_by_page")
+        elif "/v1/product-group/" in path and path.count("/") > 2:
+            tools.append("get_product_page_detail")
+        elif "/v1/product-group" in path:
+            tools.append("update_product_page_status" if method == "PATCH" else "get_product_page_list")
+        elif "/v1/masters" in path:
+            tools.append("search_masters")
+        elif "/with-series" in path:
+            tools.append("get_series_list")
+        elif "/v1/master-groups" in path:
+            tools.append("get_master_groups")
+    return tools
+
+
 # ──────────────────────────────────────────────
-# 시나리오 실행 + 결과 수집
+# 멀티턴 시나리오 실행
 # ──────────────────────────────────────────────
 
-def run_scenario(scenario: dict, collect_spans: bool = False) -> dict:
-    """시나리오를 실행하고 결과를 반환."""
+def run_scenario(scenario: dict) -> dict:
+    """시나리오를 멀티턴으로 실행. interrupt마다 자동 resume."""
     print(f"\n{'='*60}")
     print(f"🧪 [{scenario['category']}] {scenario['name']}")
     print(f"   입력: \"{scenario['messages'][0][:60]}...\"")
     print(f"{'='*60}")
 
-    # AgentCore 평가용 spans 수집
-    telemetry = None
-    if collect_spans:
-        telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
+    graph_app = create_app()
+    config = {"configurable": {"thread_id": scenario["session_id"]}}
+    reset_api_log()
+    max_turns = scenario.get("max_turns", 8)
 
-    agent, guard = create_product_agent(session_id=scenario["session_id"])
+    # Turn 1: 초기 메시지
+    msg = scenario["messages"][0]
+    try:
+        result = graph_app.invoke({
+            "messages": [HumanMessage(content=msg)],
+            "collected": {},
+            "phase": "idle",
+            "action": "",
+            "response_message": "",
+            "response_buttons": [],
+            "response_mode": "idle",
+            "response_step": None,
+            "context": {},
+        }, config)
+    except Exception as e:
+        print(f"  ❌ Turn 1 에러: {e}")
+        return _error_result(scenario, str(e))
 
-    results = []
-    for msg in scenario["messages"]:
+    turn_results = [_extract_turn_result(graph_app, config, result, 1)]
+    print(f"  Turn 1: phase={turn_results[-1]['phase']}, interrupted={turn_results[-1]['interrupted']}")
+
+    # Auto-resume: interrupt 상태면 "완료했어"로 resume
+    for turn_num in range(2, max_turns + 1):
+        state = graph_app.get_state(config)
+        if not state.tasks:
+            break  # 완료
+
         try:
-            response = agent(msg)
-            results.append({
-                "input": msg,
-                "output": str(response)[:500],
-                "phase": guard.current_phase,
-                "collected_data": dict(guard.collected_data),
-                "tool_history": list(guard.tool_history),
-                "error": None,
-            })
+            result = graph_app.invoke(Command(resume="완료했어"), config)
         except Exception as e:
-            results.append({
-                "input": msg,
-                "output": None,
-                "error": str(e),
-            })
-            print(f"  ❌ 에러: {e}")
+            print(f"  ❌ Turn {turn_num} 에러: {e}")
+            break
 
-    actual_tools = [t["tool"] for t in guard.tool_history if "tool" in t]
-    print(f"  Tool 호출: {actual_tools}")
+        turn_result = _extract_turn_result(graph_app, config, result, turn_num)
+        turn_results.append(turn_result)
+        print(f"  Turn {turn_num}: phase={turn_result['phase']}, interrupted={turn_result['interrupted']}")
 
-    # 사이드패널 buttons 생성 (마지막 응답 기준)
-    last_output = results[-1]["output"] if results and results[-1].get("output") else ""
-    buttons = _extract_buttons(last_output, guard.current_phase, dict(guard.collected_data))
-    button_data = [{"type": b.type, "label": b.label, "url": b.url, "actionId": b.actionId} for b in buttons]
-    if button_data:
-        print(f"  Buttons: {[b['label'] for b in button_data]}")
+        # 같은 phase에서 3회 연속 interrupt → 무한루프 방지
+        if len(turn_results) >= 3:
+            last3 = turn_results[-3:]
+            if (all(t["interrupted"] for t in last3)
+                and last3[0]["phase"] == last3[1]["phase"] == last3[2]["phase"]):
+                print(f"  ⚠️ 같은 phase에서 3회 연속 interrupt → 중단")
+                break
 
-    # OTEL spans → ADOT 변환
-    adot_docs = None
-    if telemetry:
-        raw_spans = list(telemetry.in_memory_exporter.get_finished_spans())
-        if raw_spans:
-            adot_docs = convert_strands_to_adot(raw_spans)
-            # tuple → list 변환 (langfuse.tags 등)
-            adot_docs = _fix_tuples(adot_docs)
+    # 결과 수집
+    api_log = get_api_log()
+    phase_log = get_phase_log()
+    actual_tools = _api_calls_to_tools(api_log)
+    total_turns = len(turn_results)
+    completed = not turn_results[-1]["interrupted"] if turn_results else False
+
+    last = turn_results[-1] if turn_results else {}
+    last_buttons = last.get("buttons", [])
+    collected = last.get("collected_data", {})
+    final_phase = last.get("phase", "")
+
+    print(f"  총 {total_turns}턴, completed={completed}")
+    print(f"  Phases: {phase_log}")
+    print(f"  Tools: {actual_tools}")
+    if last_buttons:
+        print(f"  Buttons: {[b.get('label', '') for b in last_buttons]}")
 
     return {
         "scenario": scenario["name"],
         "category": scenario["category"],
-        "results": results,
-        "final_phase": guard.current_phase,
-        "collected_data": dict(guard.collected_data),
-        "tool_history": guard.tool_history,
+        "turn_results": turn_results,
+        "total_turns": total_turns,
+        "completed": completed,
+        "final_phase": final_phase,
+        "collected_data": collected,
+        "phase_log": phase_log,
+        "api_log": api_log,
         "actual_tools": actual_tools,
         "expected_tools": scenario["expected_tools"],
+        "expected_phases": scenario.get("expected_phases", []),
         "forbidden_tools": scenario.get("forbidden_tools", []),
-        "buttons": button_data,
-        "adot_docs": adot_docs,
+        "should_complete": scenario.get("should_complete"),
+        "expected_final_phase": scenario.get("expected_final_phase"),
+        "buttons": last_buttons,
     }
 
 
-def _fix_tuples(obj):
-    """ADOT 문서의 tuple을 list로 변환 (boto3 직렬화 호환)."""
-    if isinstance(obj, dict):
-        return {k: _fix_tuples(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [_fix_tuples(i) for i in obj]
-    return obj
+def _extract_turn_result(graph_app, config, result, turn_num) -> dict:
+    """턴 실행 결과 추출."""
+    state = graph_app.get_state(config)
+    interrupted = bool(state.tasks)
 
+    if interrupted:
+        iv = state.tasks[0].interrupts[0].value
+        if isinstance(iv, dict):
+            return {
+                "turn": turn_num,
+                "phase": result.get("phase", ""),
+                "interrupted": True,
+                "message": iv.get("message", "")[:300],
+                "buttons": iv.get("buttons", []),
+                "mode": iv.get("mode", ""),
+                "collected_data": {k: v for k, v in result.get("collected", {}).items() if not k.startswith("_")},
+            }
+        return {"turn": turn_num, "phase": result.get("phase", ""), "interrupted": True, "message": str(iv)[:300], "buttons": [], "mode": "", "collected_data": {}}
+
+    return {
+        "turn": turn_num,
+        "phase": result.get("phase", ""),
+        "interrupted": False,
+        "message": result.get("response_message", "")[:300],
+        "buttons": result.get("response_buttons", []),
+        "mode": result.get("response_mode", ""),
+        "collected_data": {k: v for k, v in result.get("collected", {}).items() if not k.startswith("_")},
+    }
+
+
+def _error_result(scenario, error_msg) -> dict:
+    return {
+        "scenario": scenario["name"],
+        "category": scenario["category"],
+        "turn_results": [],
+        "total_turns": 0,
+        "completed": False,
+        "final_phase": "",
+        "collected_data": {},
+        "phase_log": [],
+        "api_log": [],
+        "actual_tools": [],
+        "expected_tools": scenario["expected_tools"],
+        "expected_phases": scenario.get("expected_phases", []),
+        "forbidden_tools": scenario.get("forbidden_tools", []),
+        "should_complete": scenario.get("should_complete"),
+        "expected_final_phase": scenario.get("expected_final_phase"),
+        "buttons": [],
+        "error": error_msg,
+    }
+
+
+# ──────────────────────────────────────────────
+# 평가
+# ──────────────────────────────────────────────
 
 def evaluate_result(result: dict) -> dict:
     """결과를 평가."""
-    actual = result["actual_tools"]
-    expected = result["expected_tools"]
+    actual_tools = result["actual_tools"]
+    expected_tools = result["expected_tools"]
     forbidden = result.get("forbidden_tools", [])
+    phase_log = result.get("phase_log", [])
+    expected_phases = result.get("expected_phases", [])
 
-    # 1. 순서 일치 (in-order subsequence match)
-    expected_idx = 0
-    for tool in actual:
-        if expected_idx < len(expected) and tool == expected[expected_idx]:
-            expected_idx += 1
-    in_order_score = expected_idx / len(expected) if expected else 1.0
+    # 1. Phase 순서 일치 (in-order subsequence)
+    phase_idx = 0
+    for phase in phase_log:
+        if phase_idx < len(expected_phases) and phase == expected_phases[phase_idx]:
+            phase_idx += 1
+    phase_order_score = phase_idx / len(expected_phases) if expected_phases else 1.0
 
-    # 2. 커버리지 (expected tools 중 실제 호출된 비율)
-    coverage = sum(1 for t in expected if t in actual) / len(expected) if expected else 1.0
+    # 2. Phase 커버리지
+    phase_coverage = sum(1 for p in expected_phases if p in phase_log) / len(expected_phases) if expected_phases else 1.0
 
-    # 3. 효율성 (불필요한 호출 비율)
-    unnecessary = [t for t in actual if t not in expected]
-    efficiency = 1.0 - (len(unnecessary) / max(len(actual), 1))
+    # 3. Tool 커버리지 (레거시 호환)
+    tool_coverage = sum(1 for t in expected_tools if t in actual_tools) / len(expected_tools) if expected_tools else 1.0
 
-    # 4. 금지 Tool 위반 여부
-    violations = [t for t in actual if t in forbidden]
+    # 4. 금지 Tool 위반
+    violations = [t for t in actual_tools if t in forbidden]
     no_violations = len(violations) == 0
 
-    # 5. cmsId 사용 여부
+    # 5. 완주 여부
+    completed = result.get("completed", False)
+    should_complete = result.get("should_complete")
+    completion_ok = True
+    if should_complete is True and not completed:
+        completion_ok = False
+    if should_complete is False and completed:
+        completion_ok = False  # 중단해야 하는데 완주했으면 문제
+
+    # 6. 최종 phase 체크
+    expected_final = result.get("expected_final_phase")
+    final_phase_ok = True
+    if expected_final and result.get("final_phase") != expected_final:
+        final_phase_ok = False
+
+    # 7. cmsId 사용 여부
     cms_id_used = "master_cms_id" in result.get("collected_data", {})
 
-    # 6. buttons 검증 (사이드패널 시나리오)
+    # 8. buttons 검증
     buttons = result.get("buttons", [])
     buttons_valid = True
     button_issues = []
     for btn in buttons:
-        if btn["type"] == "navigate" and not btn.get("url"):
+        btn_type = btn.get("type", "")
+        if btn_type == "navigate" and not btn.get("url"):
             buttons_valid = False
-            button_issues.append(f"navigate 버튼 '{btn['label']}'에 url 없음")
-        if btn["type"] == "action" and not btn.get("actionId"):
+            button_issues.append(f"navigate 버튼 '{btn.get('label', '')}'에 url 없음")
+        if btn_type == "action" and not btn.get("actionId") and not btn.get("action"):
             buttons_valid = False
-            button_issues.append(f"action 버튼 '{btn['label']}'에 actionId 없음")
-        if btn["type"] == "navigate" and btn.get("url") and not btn["url"].startswith("/") and not btn["url"].startswith("http"):
-            buttons_valid = False
-            button_issues.append(f"navigate 버튼 '{btn['label']}'의 url이 유효하지 않음: {btn['url']}")
+            button_issues.append(f"action 버튼 '{btn.get('label', '')}'에 actionId/action 없음")
 
     # 종합 pass/fail
     passed = (
-        coverage >= 0.8
+        phase_coverage >= 0.8
         and no_violations
-        and (in_order_score >= 0.7 or not expected)
+        and completion_ok
+        and final_phase_ok
     )
 
     return {
         "scenario": result["scenario"],
         "category": result["category"],
         "passed": passed,
-        "in_order_score": round(in_order_score, 2),
-        "coverage_score": round(coverage, 2),
-        "efficiency_score": round(max(efficiency, 0), 2),
+        "phase_order_score": round(phase_order_score, 2),
+        "phase_coverage": round(phase_coverage, 2),
+        "tool_coverage": round(tool_coverage, 2),
         "no_violations": no_violations,
         "violations": violations,
+        "completion_ok": completion_ok,
+        "completed": completed,
+        "final_phase_ok": final_phase_ok,
         "cms_id_used": cms_id_used,
         "buttons_valid": buttons_valid,
         "button_count": len(buttons),
         "button_issues": button_issues,
-        "actual_tools": actual,
-        "expected_tools": expected,
-        "forbidden_tools": forbidden,
-        "unnecessary_tools": unnecessary,
-        "final_phase": result["final_phase"],
-        "tool_call_count": len(actual),
+        "total_turns": result.get("total_turns", 0),
+        "phase_log": phase_log,
+        "expected_phases": expected_phases,
+        "actual_tools": actual_tools,
+        "expected_tools": expected_tools,
+        "final_phase": result.get("final_phase", ""),
+        "expected_final_phase": expected_final,
     }
-
-
-def evaluate_with_agentcore(result: dict) -> dict:
-    """AgentCore Evaluation API로 평가. adot_docs가 있어야 동작."""
-    adot_docs = result.get("adot_docs")
-    if not adot_docs:
-        return {"scenario": result["scenario"], "agentcore": {}, "error": "no adot_docs"}
-
-    import boto3
-
-    client = boto3.client("bedrock-agentcore", region_name="us-west-2")
-
-    # evaluator IDs 로드
-    evaluator_ids_path = Path(__file__).parent / "evaluator_ids.json"
-    if not evaluator_ids_path.exists():
-        return {"scenario": result["scenario"], "agentcore": {}, "error": "evaluator_ids.json not found"}
-
-    with open(evaluator_ids_path) as f:
-        evaluator_ids = json.load(f)
-
-    # 내장 + 커스텀 평가기
-    evaluators = {
-        "Builtin.Helpfulness": "Builtin.Helpfulness",
-        "Builtin.GoalSuccessRate": "Builtin.GoalSuccessRate",
-        "Builtin.ToolSelectionAccuracy": "Builtin.ToolSelectionAccuracy",
-        "Builtin.Correctness": "Builtin.Correctness",
-    }
-    evaluators.update(evaluator_ids)
-
-    scores = {}
-    for name, eval_id in evaluators.items():
-        try:
-            resp = client.evaluate(
-                evaluatorId=eval_id,
-                evaluationInput={"sessionSpans": adot_docs},
-            )
-            r = resp.get("evaluationResults", [{}])[0]
-            if "errorMessage" in r:
-                scores[name] = {"error": r["errorCode"], "message": r["errorMessage"][:100]}
-            else:
-                scores[name] = {
-                    "value": r.get("value"),
-                    "label": r.get("label"),
-                    "explanation": r.get("explanation", "")[:200],
-                }
-        except Exception as e:
-            scores[name] = {"error": str(e)[:100]}
-
-    return {"scenario": result["scenario"], "agentcore": scores}
 
 
 def main():
-    # Mock 모드 확인
     if os.environ.get("MOCK_MODE", "").lower() not in ("true", "1", "yes"):
         print("⚠️  MOCK_MODE가 꺼져 있습니다. 실제 API가 호출됩니다!")
         confirm = input("계속할까요? (y/N): ")
         if confirm.lower() != "y":
             return
 
-    # 플래그 파싱
-    use_agentcore = "--agentcore" in sys.argv
     filter_id = None
     if "--scenario" in sys.argv:
         idx = sys.argv.index("--scenario")
         if idx + 1 < len(sys.argv):
             filter_id = sys.argv[idx + 1]
 
-    # 시나리오 로드
     scenarios = load_scenarios_from_files()
     if not scenarios:
         print("❌ scenarios/ 폴더에 시나리오가 없습니다.")
@@ -344,40 +431,27 @@ def main():
             print(f"❌ '{filter_id}' 시나리오를 찾을 수 없습니다.")
             return
 
-    if use_agentcore:
-        print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 순차 — AgentCore)")
-    else:
-        print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 병렬)")
+    print(f"🚀 에이전트 평가 시나리오 실행 ({len(scenarios)}개, 멀티턴)")
     print(f"📊 Langfuse: {LANGFUSE_HOST}")
 
-    # 병렬 실행 (각 시나리오는 독립 에이전트 인스턴스)
-    # AgentCore 모드에서는 순차 실행 (OTEL telemetry가 global이라 충돌 방지)
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time
 
     start = time.time()
     all_results = []
 
-    if use_agentcore:
-        for s in scenarios:
+    with ThreadPoolExecutor(max_workers=min(len(scenarios), 5)) as executor:
+        futures = {executor.submit(run_scenario, s): s["name"] for s in scenarios}
+        for future in as_completed(futures):
+            name = futures[future]
             try:
-                result = run_scenario(s, collect_spans=True)
+                result = future.result()
                 all_results.append(result)
             except Exception as e:
-                print(f"  ❌ {s['name']} 실행 실패: {e}")
-    else:
-        with ThreadPoolExecutor(max_workers=min(len(scenarios), 5)) as executor:
-            futures = {executor.submit(run_scenario, s): s["name"] for s in scenarios}
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    result = future.result()
-                    all_results.append(result)
-                except Exception as e:
-                    print(f"  ❌ {name} 실행 실패: {e}")
+                print(f"  ❌ {name} 실행 실패: {e}")
 
     elapsed = time.time() - start
-    print(f"\n⏱️ 전체 소요: {elapsed:.1f}초 (병렬)")
+    print(f"\n⏱️ 전체 소요: {elapsed:.1f}초")
 
     all_evals = [evaluate_result(r) for r in all_results]
 
@@ -387,18 +461,21 @@ def main():
     print(f"{'='*60}\n")
 
     passed_count = 0
-    for ev in all_evals:
+    for ev in sorted(all_evals, key=lambda x: x["scenario"]):
         status = "✅ PASS" if ev["passed"] else "❌ FAIL"
         passed_count += 1 if ev["passed"] else 0
 
         print(f"{'─'*50}")
         print(f"  {status}  [{ev['category']}] {ev['scenario']}")
-        print(f"  순서: {ev['in_order_score']}  커버리지: {ev['coverage_score']}  효율: {ev['efficiency_score']}")
-        print(f"  Tool: {ev['tool_call_count']}회  Phase: {ev['final_phase']}")
+        print(f"  Phase순서: {ev['phase_order_score']}  Phase커버: {ev['phase_coverage']}  Tool커버: {ev['tool_coverage']}")
+        print(f"  턴: {ev['total_turns']}  완주: {'✅' if ev['completed'] else '⏸️'}  최종: {ev['final_phase']}")
+        print(f"  Phases: {ev['phase_log']}")
         if ev["violations"]:
             print(f"  ⛔ 금지 Tool 위반: {ev['violations']}")
-        if ev["unnecessary_tools"]:
-            print(f"  ⚠️  불필요: {ev['unnecessary_tools']}")
+        if not ev["completion_ok"]:
+            print(f"  ⛔ 완주 기대 불일치")
+        if not ev["final_phase_ok"]:
+            print(f"  ⛔ 최종 phase 불일치 (기대: {ev['expected_final_phase']})")
         if ev.get("button_count", 0) > 0:
             print(f"  🔘 Buttons: {ev['button_count']}개 {'✅' if ev['buttons_valid'] else '❌'}")
         if ev.get("button_issues"):
@@ -409,53 +486,15 @@ def main():
     print(f"📋 종합: {passed_count}/{len(all_evals)} PASS")
 
     if all_evals:
-        avg_order = sum(e["in_order_score"] for e in all_evals) / len(all_evals)
-        avg_coverage = sum(e["coverage_score"] for e in all_evals) / len(all_evals)
-        avg_efficiency = sum(e["efficiency_score"] for e in all_evals) / len(all_evals)
-        print(f"   평균 순서: {avg_order:.2f}  커버리지: {avg_coverage:.2f}  효율: {avg_efficiency:.2f}")
-
-    # AgentCore Evaluation
-    agentcore_results = []
-    if use_agentcore:
-        print(f"\n\n{'='*60}")
-        print(f"🏛️  AgentCore Evaluation ({len(all_results)}개 시나리오)")
-        print(f"{'='*60}\n")
-
-        for result in all_results:
-            ac_result = evaluate_with_agentcore(result)
-            agentcore_results.append(ac_result)
-
-            print(f"{'─'*50}")
-            print(f"  📋 {ac_result['scenario']}")
-            if ac_result.get("error"):
-                print(f"  ❌ {ac_result['error']}")
-            else:
-                for eval_name, score_data in ac_result["agentcore"].items():
-                    if "error" in score_data:
-                        print(f"    {eval_name}: ❌ {score_data['error']}")
-                    else:
-                        print(f"    {eval_name}: {score_data.get('value', 'N/A')} ({score_data.get('label', '')})")
-
-        # AgentCore 종합
-        print(f"\n{'='*60}")
-        print(f"🏛️  AgentCore 종합")
-        # 평가기별 평균 점수
-        all_scores = {}
-        for ac in agentcore_results:
-            for eval_name, data in ac.get("agentcore", {}).items():
-                if "value" in data and data["value"] is not None:
-                    all_scores.setdefault(eval_name, []).append(data["value"])
-        for eval_name, scores in sorted(all_scores.items()):
-            avg = sum(scores) / len(scores)
-            print(f"   {eval_name}: {avg:.2f} ({len(scores)}건)")
+        avg_phase = sum(e["phase_order_score"] for e in all_evals) / len(all_evals)
+        avg_coverage = sum(e["phase_coverage"] for e in all_evals) / len(all_evals)
+        avg_tool = sum(e["tool_coverage"] for e in all_evals) / len(all_evals)
+        print(f"   평균 Phase순서: {avg_phase:.2f}  Phase커버: {avg_coverage:.2f}  Tool커버: {avg_tool:.2f}")
 
     # JSON 저장
     save_data = {"results": all_results, "evaluations": all_evals}
-    if agentcore_results:
-        save_data["agentcore_evaluations"] = agentcore_results
-    # adot_docs는 크므로 저장에서 제외
     for r in save_data["results"]:
-        r.pop("adot_docs", None)
+        r.pop("api_log", None)
     with open("eval_results.json", "w") as f:
         json.dump(save_data, f, ensure_ascii=False, indent=2, default=str)
     print(f"\n💾 결과 저장: eval_results.json")
