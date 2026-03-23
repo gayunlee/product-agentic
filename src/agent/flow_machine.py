@@ -362,7 +362,14 @@ class FlowMachine:
             else:
                 understood = None
 
-            # ── Phase 1: 자연어 → LLM이 이해 ──
+            # ── Phase 1: 가드레일 (Haiku가 자주 틀리는 패턴 보정) ──
+            if not understood:
+                if any(kw in msg for kw in ["수정", "변경", "편집", "바꿀", "바꾸"]):
+                    target = "option" if any(kw in msg for kw in ["옵션", "상품옵션"]) else "page"
+                    understood = {"action": "edit", "params": {"master_name": self.data.get("_requested_master", ""), "target": target}, "message": ""}
+                    print(f"📍 가드레일: 수정 키워드 → edit (target={target})")
+
+            # ── Phase 2: 자연어 → LLM이 이해 ──
             if not understood:
                 context_summary = self._build_context_summary()
                 understood = _llm_understand(msg, self._history, context_summary)
