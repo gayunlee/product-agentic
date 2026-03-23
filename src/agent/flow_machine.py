@@ -267,14 +267,20 @@ class FlowMachine:
         print(f"📍 state={self.state}, msg={msg[:40]}")
 
         try:
-            # ── Phase 0: 확실한 패턴은 LLM 없이 빠르게 처리 ──
-            fast = self._fast_match(msg)
-            if fast:
-                print(f"📍 fast_match: {fast}")
+            # ── Phase 0: 버튼 클릭 (JSON action) → LLM 없이 직접 처리 ──
+            if msg.startswith("{"):
+                try:
+                    understood = {"action": "direct", "params": json.loads(msg), "message": ""}
+                    print(f"📍 direct action: {understood['params']}")
+                except json.JSONDecodeError:
+                    understood = None
+            else:
+                understood = None
 
-            # ── Phase 1: LLM이 대화를 이해하고 액션 결정 ──
-            context_summary = self._build_context_summary()
-            understood = fast or _llm_understand(msg, self._history, context_summary)
+            # ── Phase 1: 자연어 → LLM이 이해 ──
+            if not understood:
+                context_summary = self._build_context_summary()
+                understood = _llm_understand(msg, self._history, context_summary)
             action = understood.get("action", "chat")
             params = understood.get("params", {})
             llm_message = understood.get("message", "")
@@ -360,6 +366,31 @@ class FlowMachine:
         # ── 대기 상태에서 confirm 처리 ──
         if action == "confirm" and self.state.startswith("wait_"):
             return self._handle_wait("완료했어")
+
+        # ── direct action (버튼 클릭 — JSON으로 전달됨) ──
+        if action == "direct":
+            direct_type = params.get("type", "")
+            direct_target = params.get("target", "")
+            direct_params = params.get("params", params)
+            # 활성화 관련
+            if direct_target == "activate_display":
+                return self._handle_activate_step("activate_display")
+            if direct_target == "activate_page":
+                return self._handle_activate_step("activate_page")
+            if direct_target == "activate_main":
+                return self._handle_activate_step("activate_main")
+            if direct_target == "activate" or direct_type == "do_activate":
+                return self._do_activate()
+            # 일반 라우팅
+            if direct_type in INTENT_TO_TARGET:
+                if direct_params.get("master_name"):
+                    self.data["_requested_master"] = direct_params["master_name"]
+                if direct_params.get("page_code"):
+                    self._resolve_page_code(direct_params["page_code"])
+                return self._resolve_prerequisites(INTENT_TO_TARGET[direct_type])
+            # confirm
+            if direct_type == "confirm" and self.state.startswith("wait_"):
+                return self._handle_wait("완료했어")
 
         # ── 직접 실행 액션 (조회류) ──
         if action == "list_masters":
@@ -752,7 +783,7 @@ class FlowMachine:
             message=f"**{master_name}** > **{page_title}** ({type_label}){existing_text}",
             buttons=[
                 {"type": "navigate", "label": "📦 옵션 추가", "url": f"/product/create?productPageId={page_id}&productType={self.data.get('product_type', 'SUBSCRIPTION')}&masterId={master_id}", "variant": "primary", "description": "새 상품 옵션을 등록합니다."},
-                {"type": "action", "label": "➡️ 다음 (활성화)", "actionId": "activate", "variant": "secondary", "description": "활성화 단계로 넘어갑니다."},
+                {"type": "action", "label": "➡️ 다음 (활성화)", "action": {"type": "do_activate", "target": "activate", "params": {}}, "variant": "secondary", "description": "활성화 단계로 넘어갑니다."},
             ],
             step=_step_meta("guide_create_option"),
         )
@@ -1136,22 +1167,25 @@ class FlowMachine:
             names = ", ".join(p.get("name", "") for p in hidden)
             buttons.append({
                 "type": "action", "label": f"👁️ 비공개 옵션 {len(hidden)}개 공개하기",
-                "actionId": "activate_display", "variant": "primary",
+                "action": {"type": "direct", "target": "activate_display", "params": {}},
+                "variant": "primary",
                 "description": f"{names} 옵션을 공개합니다.",
             })
 
         if page_status != "ACTIVE":
             buttons.append({
-                "type": "action", "label": "📄 상품 페이지 공개하기",
-                "actionId": "activate_page", "variant": "primary",
-                "description": "상품 페이지를 공개 상태로 변경합니다.",
+                "type": "action", "label": "📄 이 페이지 공개하기",
+                "action": {"type": "direct", "target": "activate_page", "params": {}},
+                "variant": "primary",
+                "description": f"'{page_title}' 페이지를 공개로 변경합니다.",
             })
 
         if main_status != "ACTIVE":
             buttons.append({
-                "type": "action", "label": "🏠 메인 상품 페이지 활성화",
-                "actionId": "activate_main", "variant": "primary",
-                "description": "어스플러스 구독 탭에서 이 마스터의 상품이 노출됩니다.",
+                "type": "action", "label": "🏠 구독 탭 노출 켜기",
+                "action": {"type": "direct", "target": "activate_main", "params": {}},
+                "variant": "primary",
+                "description": f"{master_name} 마스터를 구독 탭에 표시합니다.",
             })
 
         if not buttons:
