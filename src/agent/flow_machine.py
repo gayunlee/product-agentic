@@ -1124,30 +1124,30 @@ class FlowMachine:
         if self.state == "wait_activate_step":
             return self._handle_activate_step(msg)
 
-        if self.state == "wait_select_page":
-            # 유저가 페이지 코드를 입력하면 선택
+        if self.state in ("wait_select_page", "wait_select_page_for_edit"):
+            is_for_edit = self.state == "wait_select_page_for_edit"
             choices = self.data.get("_page_choices", {})
-            # 숫자만 추출
             nums = "".join(c for c in msg if c.isdigit())
+            matched_page = None
             if nums and nums in choices:
-                page = choices[nums]
-                self.data["product_page_id"] = page.get("id", "")
-                self.data["product_page_code"] = page.get("code", "")
-                self.data["product_page_title"] = page.get("title", "")
-                self.state = "wait_create_option"
-                return self._exec_guide_create_option()
-            # 페이지명으로 매칭 시도
-            for code, page in choices.items():
-                if page.get("title", "") in msg:
-                    self.data["product_page_id"] = page.get("id", "")
-                    self.data["product_page_code"] = page.get("code", "")
-                    self.data["product_page_title"] = page.get("title", "")
+                matched_page = choices[nums]
+            else:
+                for code, page in choices.items():
+                    if page.get("title", "") in msg:
+                        matched_page = page
+                        break
+            if matched_page:
+                self.data["product_page_id"] = matched_page.get("id", "")
+                self.data["product_page_code"] = matched_page.get("code", "")
+                self.data["product_page_title"] = matched_page.get("title", "")
+                if is_for_edit:
+                    self.state = "idle"
+                    return self._handle_edit_request(msg)
+                else:
                     self.state = "wait_create_option"
                     return self._exec_guide_create_option()
             return Response(
-                message="페이지 코드 번호를 입력해주세요.",
-                buttons=self._buttons_for_state("wait_select_page"),
-                step=_step_meta("guide_create_page"),
+                message="페이지 코드 번호 또는 페이지명을 입력해주세요.",
             )
 
         if self.state == "wait_create_page":
@@ -1388,32 +1388,30 @@ class FlowMachine:
         if not page_id:
             pages = _api_get("/v1/product-group", {"masterId": master_id})
             if isinstance(pages, list) and len(pages) > 0:
-                # 메시지에서 페이지명 매칭
-                matched = None
-                for p in pages:
-                    title = p.get("title", "")
-                    if title and title in msg:
-                        matched = p
-                        break
-                # "노출중인" → 실제 노출 페이지 찾기
-                if not matched and ("노출" in msg or "현재" in msg):
-                    active = [p for p in pages if p.get("status") == "ACTIVE"]
-                    showing = _find_active_page(active)
-                    if showing:
-                        matched = showing
                 # 1개면 자동 선택
-                if not matched and len(pages) == 1:
+                if len(pages) == 1:
                     matched = pages[0]
-
-                if matched:
                     page_id = matched.get("id", "")
                     page_title = matched.get("title", "")
                     self.data["product_page_id"] = page_id
                     self.data["product_page_title"] = page_title
                     self.data["product_page_code"] = matched.get("code", "")
                 else:
-                    rows = "\n".join(f"- **{p.get('title', '')}** (코드: {p.get('code', '')})" for p in pages)
-                    return Response(message=f"어떤 페이지를 수정하시겠어요?\n{rows}")
+                    # 여러 개 → 목록 보여주고 선택하게
+                    active = [p for p in pages if p.get("status") == "ACTIVE"]
+                    showing = _find_active_page(active)
+                    showing_code = str(showing.get("code", "")) if showing else ""
+                    rows = "\n".join(
+                        f"- {'🔴 ' if str(p.get('code', '')) == showing_code else ''}"
+                        f"**{p.get('title', '')}** (코드: {p.get('code', '')}, {_status_label(p.get('status', ''))})"
+                        f"{' ← 현재 노출 중' if str(p.get('code', '')) == showing_code else ''}"
+                        for p in pages
+                    )
+                    self.state = "wait_select_page_for_edit"
+                    self.data["_page_choices"] = {str(p.get("code", "")): p for p in pages}
+                    return Response(
+                        message=f"**{master_name}** 상품 페이지 **{len(pages)}개**:\n{rows}\n\n수정할 페이지의 **코드 번호**를 알려주세요.",
+                    )
 
         buttons = []
         if page_id:
