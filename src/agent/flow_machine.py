@@ -1276,13 +1276,25 @@ class FlowMachine:
                 checks.append(f"  └ {p.get('title', '')} (코드: {p.get('code', '')}, {status_tag}{hidden_tag})")
             if hidden_pages:
                 checks.append(f"💡 히든 페이지는 URL 직접 접근만 가능, 구독 탭에는 미노출")
-            # 실제 노출 중인 페이지
+            # 실제 노출 중인 페이지 (사전조건 체인 반영)
             showing = _find_active_page(active_pages)
             if showing:
                 is_hidden = showing.get("_isHidden", showing.get("isHidden", False))
-                hidden_label = " ⚠️ 히든" if is_hidden else ""
-                checks.append(f"🔴 실제 노출 중: **{showing.get('title', '')}** (코드: {showing.get('code', '')}){hidden_label}")
                 page_id = showing.get("id", "")
+                if is_hidden:
+                    # 히든 페이지는 사전조건 무관하게 URL로 접근 가능
+                    checks.append(f"🔴 URL 노출 중 (히든): **{showing.get('title', '')}** (코드: {showing.get('code', '')}) 🔒")
+                elif not is_public or not main_active:
+                    # 사전조건 미충족 → 구독 탭에서 안 보임
+                    reasons = []
+                    if not is_public:
+                        reasons.append("마스터 비공개")
+                    if not main_active:
+                        reasons.append("메인 상품 페이지 비활성화")
+                    checks.append(f"❌ 구독 탭 미노출: **{showing.get('title', '')}** (코드: {showing.get('code', '')}) — {', '.join(reasons)}")
+                    checks.append(f"  💡 페이지 자체는 공개지만, 사전조건 미충족으로 고객 접근 불가")
+                else:
+                    checks.append(f"🔴 실제 노출 중: **{showing.get('title', '')}** (코드: {showing.get('code', '')})")
             else:
                 checks.append("⚠️ 공개 페이지는 있으나 실제 노출 조건을 만족하는 페이지 없음")
         else:
