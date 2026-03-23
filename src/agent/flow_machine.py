@@ -1259,14 +1259,19 @@ class FlowMachine:
         hidden_pages = []
         if isinstance(pages, list) and len(pages) > 0:
             active_pages = [p for p in pages if p.get("status") == "ACTIVE"]
-            hidden_pages = [p for p in pages if p.get("isHidden")]
             page_active = len(active_pages) > 0
             if active_pages:
                 page_id = active_pages[0].get("id", "")
             checks.append(f"{'✅' if page_active else '❌'} 상품 페이지: {len(active_pages)}개 공개 / {len(pages)}개 전체")
-            # 각 페이지 상세 (히든 여부 포함)
+            # 각 페이지 상세 조회 (목록 API에 isHidden이 없을 수 있음)
+            hidden_pages = []
             for p in pages:
-                hidden_tag = " 🔒히든" if p.get("isHidden") else ""
+                detail = _api_get(f"/v1/product-group/{p.get('id', '')}")
+                is_hidden = detail.get("isHidden", False) if isinstance(detail, dict) and not detail.get("error") else p.get("isHidden", False)
+                p["_isHidden"] = is_hidden  # 후속 참조용
+                if is_hidden:
+                    hidden_pages.append(p)
+                hidden_tag = " 🔒히든" if is_hidden else ""
                 status_tag = _status_label(p.get("status", ""))
                 checks.append(f"  └ {p.get('title', '')} (코드: {p.get('code', '')}, {status_tag}{hidden_tag})")
             if hidden_pages:
@@ -1274,7 +1279,7 @@ class FlowMachine:
             # 실제 노출 중인 페이지
             showing = _find_active_page(active_pages)
             if showing:
-                is_hidden = showing.get("isHidden", False)
+                is_hidden = showing.get("_isHidden", showing.get("isHidden", False))
                 hidden_label = " ⚠️ 히든" if is_hidden else ""
                 checks.append(f"🔴 실제 노출 중: **{showing.get('title', '')}** (코드: {showing.get('code', '')}){hidden_label}")
                 page_id = showing.get("id", "")
