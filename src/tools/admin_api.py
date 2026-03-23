@@ -25,13 +25,15 @@ MOCK_RESPONSES = {
     "search_masters": [
         {"id": "673301e25aa67ba37f477759", "cmsId": "35", "name": "조조형우", "createdAt": "2024-11-12", "publicType": "PUBLIC", "masterGroupId": "69b37159193f23cd69de4df7", "masterGroupName": "조조형우의 클럽"},
     ],
-    "get_master_detail": {"cmsId": "35", "name": "조조형우", "displayName": "조조형우", "clubPublicType": "PUBLIC", "clubName": "조조형우", "productGroupViewStatus": "ACTIVE", "masterDisplayIndex": 10},
+    "get_master_detail": {"cmsId": "35", "name": "조조형우", "displayName": "조조형우", "clubPublicType": "PUBLIC", "clubName": "조조형우", "productGroupViewStatus": "INACTIVE", "masterDisplayIndex": 10},
     "get_series_list": {"masters": [{"_id": "673301e25aa67ba37f477759", "name": "조조형우", "series": [
         {"_id": "mock_series_001", "title": "투자 기초 시리즈"},
         {"_id": "mock_series_002", "title": "경제 분석 리포트"},
     ]}]},
-    "get_product_page_list": [],  # 첫 조회는 빈 목록
-    "get_product_page_list_after": [{"id": "mock_page_001", "title": "월간 투자 리포트 페이지", "status": "INACTIVE", "code": 148, "isAlwaysPublic": True, "isAlwaysApply": True, "startAt": "1970.01.01", "endAt": "9999.12.31", "applyStartAt": "1970-01-01", "applyEndAt": "9999-12-31", "createdAt": "2026-03-18", "isDeletable": True}],
+    "get_product_page_list": [
+        {"id": "mock_page_001", "title": "월간 투자 리포트 페이지", "status": "ACTIVE", "code": 148, "isAlwaysPublic": True, "isAlwaysApply": True, "startAt": "1970.01.01", "endAt": "9999.12.31", "applyStartAt": "1970-01-01", "applyEndAt": "9999-12-31", "createdAt": "2026-03-18", "isDeletable": True},
+        {"id": "mock_page_002", "title": "단건 특강", "status": "INACTIVE", "code": 155, "isAlwaysPublic": False, "isAlwaysApply": True, "startAt": "2026-03-01", "endAt": "2026-03-31", "createdAt": "2026-03-10", "isDeletable": True},
+    ],
     "update_product_display": {"success": True, "status": 200},
     "update_product_page_status": {"success": True, "status": 200},
     "update_product_page": {"success": True, "status": 200},
@@ -42,19 +44,8 @@ MOCK_RESPONSES = {
     "navigate": {"url": "/product", "label": "상품 페이지 목록"},
 }
 
-# product_page_list 호출 카운터 (첫 번째는 빈 목록, 두 번째부터 결과 반환)
-_product_page_list_call_count = 0
-
-
 def _get_mock(tool_name: str, **kwargs) -> dict | list:
     """Mock 응답을 반환합니다. 검색어에 따라 분기."""
-    global _product_page_list_call_count
-
-    if tool_name == "get_product_page_list":
-        _product_page_list_call_count += 1
-        if _product_page_list_call_count <= 1:
-            return MOCK_RESPONSES["get_product_page_list"]
-        return MOCK_RESPONSES["get_product_page_list_after"]
 
     # 검색어 기반 분기 (마스터 검색)
     keyword = kwargs.get("keyword", "")

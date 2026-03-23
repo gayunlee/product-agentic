@@ -69,9 +69,31 @@ def _get_token() -> str:
     return ADMIN_TOKEN
 
 
+MOCK_API_RESPONSES: dict[str, dict | list] = {
+    "/v1/masters/35": {"cmsId": "35", "name": "조조형우", "clubPublicType": "PUBLIC", "productGroupViewStatus": "INACTIVE"},
+    "/v1/masters/35/main-product-group": {"productGroupViewStatus": "INACTIVE"},
+    "/v1/masters/100": {"cmsId": "100", "name": "김영익", "clubPublicType": "PENDING", "productGroupViewStatus": "INACTIVE"},
+    "/v1/masters/100/main-product-group": {"productGroupViewStatus": "INACTIVE"},
+    "/v1/product-group": [
+        {"id": "mock_page_001", "title": "월간 투자 리포트 페이지", "status": "ACTIVE", "code": 148, "isAlwaysPublic": True},
+        {"id": "mock_page_002", "title": "단건 특강", "status": "INACTIVE", "code": 155, "isAlwaysPublic": False},
+    ],
+    "/v1/product-group/mock_page_001": {"id": "mock_page_001", "title": "월간 투자 리포트 페이지", "status": "ACTIVE", "isHidden": False, "isAlwaysPublic": True},
+    "/v1/product-group/mock_page_002": {"id": "mock_page_002", "title": "단건 특강", "status": "INACTIVE", "isHidden": False},
+    "/v1/product/group/mock_page_001": [{"productId": "99999", "name": "월간 투자 리포트", "price": 29900, "isDisplay": True}],
+    "/v1/product/group/mock_page_002": [],
+}
+
+
 def _api_get(path: str, params: dict | None = None) -> dict | list:
     """관리자센터 API GET 요청."""
     if MOCK_MODE:
+        # 정확한 path 매칭 먼저, 없으면 prefix 매칭
+        if path in MOCK_API_RESPONSES:
+            return MOCK_API_RESPONSES[path]
+        # params에 masterId가 있는 product-group 조회
+        if path == "/v1/product-group" and params:
+            return MOCK_API_RESPONSES.get("/v1/product-group", [])
         return {"mock": True, "path": path}
     with httpx.Client(
         base_url=ADMIN_BASE,
