@@ -231,13 +231,18 @@ def _find_active_page(pages: list[dict]) -> dict | None:
 
     # 1. 기간공개 중 오늘이 기간 내인 것
     for p in active_pages:
-        if not p.get("isAlwaysPublic") and p.get("startAt") and p.get("endAt"):
+        if not p.get("isAlwaysPublic") and (p.get("startAt") or p.get("endAt")):
+            raw_start = p.get("startAt", "")
+            raw_end = p.get("endAt", "")
+            print(f"🗓️ 기간공개 체크: {p.get('title', '')} startAt={raw_start} endAt={raw_end}")
             try:
-                start = datetime.fromisoformat(p["startAt"].replace("Z", "+00:00")).date()
-                end = datetime.fromisoformat(p["endAt"].replace("Z", "+00:00")).date()
+                start = _parse_date(raw_start) if raw_start else date.min
+                end = _parse_date(raw_end) if raw_end else date.max
                 if start <= today <= end:
+                    print(f"🗓️ → 오늘({today}) 기간 내! 이 페이지가 노출")
                     return p
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                print(f"🗓️ → 날짜 파싱 실패: {e}")
                 continue
 
     # 2. 상시공개
@@ -246,6 +251,22 @@ def _find_active_page(pages: list[dict]) -> dict | None:
             return p
 
     return None
+
+
+def _parse_date(raw: str):
+    """다양한 날짜 형식 파싱."""
+    from datetime import datetime, date
+    if not raw:
+        return date.min
+    # ISO 8601
+    for fmt in ["%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y.%m.%d"]:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    # fromisoformat fallback
+    return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
 
 
 class FlowMachine:
