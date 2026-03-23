@@ -1,14 +1,15 @@
 """
-관리자센터 API Tools for Strands Agent.
+관리자센터 API Tools.
 
 에이전트가 관리자센터 API를 호출할 수 있도록 Tool로 래핑.
 각 함수는 @tool 데코레이터로 에이전트에 노출됨.
+LangChain tool 형식 사용.
 """
 
 import os
 import httpx
 import requests
-from strands import tool
+from langchain_core.tools import tool
 
 ADMIN_BASE = os.environ.get("ADMIN_API_BASE_URL", "")
 ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "")
