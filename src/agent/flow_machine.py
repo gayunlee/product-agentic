@@ -640,11 +640,11 @@ class FlowMachine:
             rows = "\n".join(f"- {p.get('name', '')} ({p.get('originPrice', 0):,}원, {'공개' if p.get('isDisplay') else '비공개'})" for p in products)
             return Response(message=f"'{option_name}' 옵션을 찾을 수 없습니다.\n\n등록된 옵션:\n{rows}\n\n정확한 옵션명을 알려주세요.")
 
-        product_id = str(target.get("id", ""))
+        product_id = str(target.get("productId", target.get("id", "")))
         current = "공개" if target.get("isDisplay") else "비공개"
 
         return Response(
-            message=f"**{target.get('name', '')}** ({target.get('originPrice', 0):,}원)을 {label} 처리할까요?\n\n현재 상태: {current}\n\n아래에서 직접 변경도 가능합니다.",
+            message=f"**{target.get('name', '')}** ({target.get('originPrice', target.get('price', 0)):,}원)을 {label} 처리할까요?\n\n현재 상태: {current}\n\n아래에서 직접 변경도 가능합니다.",
             buttons=[
                 {"type": "action", "label": f"⚡ {label} 처리", "action": {"type": "direct", "target": "toggle_display_exec", "params": {"product_id": product_id, "is_display": str(action_type == "show")}}, "variant": "primary", "description": f"에이전트가 {label} 처리합니다."},
                 {"type": "navigate", "label": "📦 직접 변경하러 가기", "url": f"/product/page/{page_id}?masterId={cms_id}&tab=options", "variant": "secondary", "description": "상품 옵션 탭에서 직접 변경합니다."},
