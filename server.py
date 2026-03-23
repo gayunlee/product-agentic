@@ -1,6 +1,8 @@
 """
 로컬 웹 UI 서버. 채팅 형태로 에이전트와 대화.
 
+LangGraph 기반 상품 세팅 에이전트.
+
 Usage:
     uv run python server.py
     → http://localhost:8000
@@ -36,22 +38,19 @@ provider.add_span_processor(SimpleSpanProcessor(exporter))
 trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
-import re
 import json
-
-import asyncio
-import threading
+import uuid
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
+from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
-from src.agent.product_agent import create_product_agent
-from src.agent.flow_machine import FlowMachine
-from src.agent.memory import save_turn, get_context_for_prompt
+from src.agent.graph import create_app
 
-app = FastAPI(title="상품 세팅 에이전트 POC")
+app = FastAPI(title="상품 세팅 에이전트 (LangGraph)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,26 +60,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 스테이트머신 (메인 플로우)
-_flow = FlowMachine()
+# Guardrail 설정 로드
+_guardrail_config = None
+try:
+    with open("guardrail_id.json") as f:
+        gd = json.load(f)
+    _guardrail_config = {
+        "guardrailIdentifier": gd["guardrailId"],
+        "guardrailVersion": gd["version"],
+        "trace": "enabled",
+    }
+    print(f"Bedrock Guardrails 활성화: {gd['guardrailId']} v{gd['version']}")
+except Exception as e:
+    print(f"Guardrail 설정 없음: {e}")
 
-# LLM 에이전트 (진단/자유질문 fallback용)
-_agent = None
-_flow_guard = None
+# LangGraph 앱
+_graph_app = create_app(guardrail_config=_guardrail_config)
 
-USE_MEMORY = os.environ.get("USE_MEMORY", "").lower() in ("true", "1", "yes")
+# 세션별 thread_id 관리
+_session_threads: dict[str, str] = {}
+_DEFAULT_SESSION = "default"
 
 
-def get_agent():
-    global _agent, _flow_guard
-    if _agent is None:
-        _agent, _flow_guard = create_product_agent(use_memory=USE_MEMORY)
-    return _agent
+def _get_thread_id(session_id: str = _DEFAULT_SESSION) -> str:
+    if session_id not in _session_threads:
+        _session_threads[session_id] = str(uuid.uuid4())
+    return _session_threads[session_id]
 
 
 class ChatRequest(BaseModel):
     message: str
-    context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId? }
+    session_id: str | None = None
+    context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId?, token? }
 
 
 class Button(BaseModel):
@@ -88,8 +99,9 @@ class Button(BaseModel):
     label: str
     url: str | None = None
     actionId: str | None = None
+    action: dict | None = None
     variant: str | None = None  # "primary" | "secondary" | "danger"
-    description: str | None = None  # 버튼 아래 설명 텍스트
+    description: str | None = None
 
 
 class StepProgress(BaseModel):
@@ -100,37 +112,10 @@ class StepProgress(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    message: str  # 마크다운 텍스트 (JSON 블록 제거된)
+    message: str
     buttons: list[Button] = []
-    mode: str = "idle"  # "guide" | "execute" | "diagnose" | "idle"
+    mode: str = "idle"
     step: StepProgress | None = None
-
-
-def _parse_agent_response(raw: str) -> dict:
-    """에이전트 응답에서 structured blocks 파싱."""
-    buttons = []
-    meta = {"mode": "idle"}
-    message = raw
-
-    # json:buttons 블록 파싱
-    btn_match = re.search(r'```json:buttons\s*\n(.*?)\n```', raw, re.DOTALL)
-    if btn_match:
-        try:
-            buttons = json.loads(btn_match.group(1))
-        except json.JSONDecodeError:
-            pass
-        message = message.replace(btn_match.group(0), '').strip()
-
-    # json:meta 블록 파싱
-    meta_match = re.search(r'```json:meta\s*\n(.*?)\n```', raw, re.DOTALL)
-    if meta_match:
-        try:
-            meta = json.loads(meta_match.group(1))
-        except json.JSONDecodeError:
-            pass
-        message = message.replace(meta_match.group(0), '').strip()
-
-    return {"message": message, "buttons": buttons, "meta": meta}
 
 
 def _inject_token(context: dict | None):
@@ -140,69 +125,94 @@ def _inject_token(context: dict | None):
         if token:
             import src.tools.admin_api as admin_api
             admin_api.ADMIN_TOKEN = token
-            print(f"🔑 토큰 주입 완료: 길이={len(token)}")
-        else:
-            print(f"⚠️ token 없음, context keys: {list(context.keys())}")
+
+
+def _handle_graph(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
+    """LangGraph 그래프를 호출하고 결과를 ChatResponse로 변환."""
+    thread_id = _get_thread_id(session_id)
+    config = {"configurable": {"thread_id": thread_id}}
+
+    # 현재 상태 확인 — interrupt 중이면 resume
+    state = _graph_app.get_state(config)
+
+    if state.tasks:
+        # interrupt 상태 → resume
+        result = _graph_app.invoke(Command(resume=message), config)
     else:
-        print("⚠️ context 없음")
+        # 새 대화 또는 완료 후 새 메시지
+        # 이전 상태에서 collected 보존
+        prev_collected = {}
+        if state.values:
+            prev_collected = state.values.get("collected", {})
+
+        result = _graph_app.invoke({
+            "messages": [HumanMessage(content=message)],
+            "collected": prev_collected,
+            "phase": state.values.get("phase", "idle") if state.values else "idle",
+            "action": "",
+            "response_message": "",
+            "response_buttons": [],
+            "response_mode": "idle",
+            "response_step": None,
+            "context": context or {},
+        }, config)
+
+    # interrupt 발생 여부 확인
+    new_state = _graph_app.get_state(config)
+    if new_state.tasks:
+        # interrupt 된 상태 — interrupt value가 응답
+        interrupt_val = new_state.tasks[0].interrupts[0].value
+        if isinstance(interrupt_val, dict):
+            return ChatResponse(
+                message=interrupt_val.get("message", ""),
+                buttons=[Button(**b) for b in interrupt_val.get("buttons", [])],
+                mode=interrupt_val.get("mode", "guide"),
+                step=StepProgress(**interrupt_val["step"]) if interrupt_val.get("step") else None,
+            )
+        # 문자열 interrupt (슬롯 필링)
+        return ChatResponse(message=str(interrupt_val))
+
+    # 정상 완료
+    msg = result.get("response_message", "")
+    buttons = result.get("response_buttons", [])
+    mode = result.get("response_mode", "idle")
+    step = result.get("response_step")
+
+    return ChatResponse(
+        message=msg or "처리 완료.",
+        buttons=[Button(**b) for b in buttons],
+        mode=mode,
+        step=StepProgress(**step) if step else None,
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     try:
-        msg = req.message.strip()
         _inject_token(req.context)
-
-        # 스테이트머신이 모든 걸 처리 (LLM 대화 관리 포함)
-        result = _flow.handle(msg, req.context)
-
-        return ChatResponse(
-            message=result.message,
-            buttons=[Button(**b) for b in result.buttons],
-            mode=result.mode,
-            step=StepProgress(**result.step) if result.step else None,
-        )
+        session_id = req.session_id or _DEFAULT_SESSION
+        return _handle_graph(req.message.strip(), session_id, req.context)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return ChatResponse(message=f"오류 발생: {e}")
-
-
-TOOL_DESCRIPTIONS: dict[str, str] = {
-    "search_masters": "마스터 검색 중...",
-    "get_master_groups": "마스터 그룹 확인 중...",
-    "get_master_detail": "마스터 상세 확인 중...",
-    "create_master_group": "마스터 그룹 생성 중...",
-    "get_series_list": "시리즈 확인 중...",
-    "create_series": "시리즈 생성 중...",
-    "get_product_page_list": "상품 페이지 확인 중...",
-    "get_product_page_detail": "상품 페이지 상세 확인 중...",
-    "get_product_list_by_page": "상품 옵션 확인 중...",
-    "create_product_page": "상품 페이지 생성 중...",
-    "create_product": "상품 옵션 등록 중...",
-    "update_product_display": "상품 노출 설정 중...",
-    "update_product_sequence": "상품 순서 설정 중...",
-    "update_product_page_status": "상품 페이지 상태 변경 중...",
-    "update_main_product_setting": "메인 상품 설정 중...",
-    "verify_product_setup": "검증 중...",
-}
 
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     _inject_token(req.context)
+    session_id = req.session_id or _DEFAULT_SESSION
 
     async def event_generator():
-        msg = req.message.strip()
-
-        # 스테이트머신 처리 (API 호출 포함, 즉시 완료)
         yield f"event: tool_start\ndata: {json.dumps({'tool': 'flow', 'message': '처리 중...'}, ensure_ascii=False)}\n\n"
 
-        result = _flow.handle(msg, req.context)
+        result = _handle_graph(req.message.strip(), session_id, req.context)
 
         final_data = {
             "message": result.message,
-            "buttons": result.buttons,
+            "buttons": [b.model_dump(exclude_none=True) for b in result.buttons],
             "mode": result.mode,
-            "step": result.step,
+            "step": result.step.model_dump() if result.step else None,
         }
         yield f"event: message\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
 
@@ -215,11 +225,23 @@ async def chat_stream(req: ChatRequest):
 
 @app.post("/reset")
 async def reset():
-    global _agent, _flow_guard
-    _agent = None
-    _flow_guard = None
-    _flow.reset()
+    global _graph_app, _session_threads
+    _session_threads.clear()
+    _graph_app = create_app(guardrail_config=_guardrail_config)
     return {"status": "ok"}
+
+
+# eval_scenarios.py에서 사용하는 호환 함수
+def _extract_buttons(raw: str) -> list[dict]:
+    """레거시 호환: 에이전트 응답에서 버튼 추출 (이제 graph가 직접 반환)."""
+    import re
+    btn_match = re.search(r'```json:buttons\s*\n(.*?)\n```', raw, re.DOTALL)
+    if btn_match:
+        try:
+            return json.loads(btn_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    return []
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -265,7 +287,7 @@ header h1 { font-size: 18px; font-weight: 600; }
 </head>
 <body>
 <header>
-  <h1>어스플러스 상품 세팅 에이전트</h1>
+  <h1>어스플러스 상품 세팅 에이전트 (LangGraph)</h1>
   <button id="reset-btn" onclick="resetChat()">새로 시작</button>
 </header>
 <div id="chat-container">
