@@ -1,7 +1,7 @@
 """
 로컬 웹 UI 서버. 채팅 형태로 에이전트와 대화.
 
-LangGraph 기반 상품 세팅 에이전트.
+멀티 에이전트 (Strands) — 오케스트레이터 → 수행/도메인/검증.
 
 Usage:
     uv run python server.py
@@ -39,18 +39,15 @@ trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
 import json
-import uuid
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage
-from langgraph.types import Command
 
-from src.agent.graph import create_app
+from src.agents import create_orchestrator
 
-app = FastAPI(title="상품 세팅 에이전트 (LangGraph)")
+app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -60,32 +57,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Guardrail 설정 로드
-_guardrail_config = None
-try:
-    with open("guardrail_id.json") as f:
-        gd = json.load(f)
-    _guardrail_config = {
-        "guardrailIdentifier": gd["guardrailId"],
-        "guardrailVersion": gd["version"],
-        "trace": "enabled",
-    }
-    print(f"Bedrock Guardrails 활성화: {gd['guardrailId']} v{gd['version']}")
-except Exception as e:
-    print(f"Guardrail 설정 없음: {e}")
-
-# LangGraph 앱
-_graph_app = create_app(guardrail_config=_guardrail_config)
-
-# 세션별 thread_id 관리
-_session_threads: dict[str, str] = {}
+# 세션별 오케스트레이터 관리
+_sessions: dict[str, object] = {}
 _DEFAULT_SESSION = "default"
 
 
-def _get_thread_id(session_id: str = _DEFAULT_SESSION) -> str:
-    if session_id not in _session_threads:
-        _session_threads[session_id] = str(uuid.uuid4())
-    return _session_threads[session_id]
+def _get_orchestrator(session_id: str = _DEFAULT_SESSION):
+    if session_id not in _sessions:
+        _sessions[session_id] = create_orchestrator(session_id=session_id)
+    return _sessions[session_id]
 
 
 class ChatRequest(BaseModel):
@@ -94,28 +74,10 @@ class ChatRequest(BaseModel):
     context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId?, token? }
 
 
-class Button(BaseModel):
-    type: str  # "navigate" | "confirm" | "action" | "skip"
-    label: str
-    url: str | None = None
-    actionId: str | None = None
-    action: dict | None = None
-    variant: str | None = None  # "primary" | "secondary" | "danger"
-    description: str | None = None
-
-
-class StepProgress(BaseModel):
-    current: int
-    total: int
-    label: str
-    steps: list[str]
-
-
 class ChatResponse(BaseModel):
     message: str
-    buttons: list[Button] = []
+    buttons: list[dict] = []
     mode: str = "idle"
-    step: StepProgress | None = None
 
 
 def _inject_token(context: dict | None):
@@ -124,7 +86,6 @@ def _inject_token(context: dict | None):
         token = context.get("token", "")
         if token:
             import src.tools.admin_api as admin_api
-            # 기존 토큰과 다를 때만 로그
             if admin_api.ADMIN_TOKEN != token:
                 print(f"🔑 새 토큰 주입: 길이={len(token)} (이전: {len(admin_api.ADMIN_TOKEN)})")
             admin_api.ADMIN_TOKEN = token
@@ -134,63 +95,15 @@ def _inject_token(context: dict | None):
         print("⚠️ context 없음 → .env 토큰 사용")
 
 
-def _handle_graph(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
-    """LangGraph 그래프를 호출하고 결과를 ChatResponse로 변환."""
-    thread_id = _get_thread_id(session_id)
-    config = {"configurable": {"thread_id": thread_id}}
+def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
+    """오케스트레이터를 호출하고 결과를 ChatResponse로 변환."""
+    orchestrator = _get_orchestrator(session_id)
 
-    # 현재 상태 확인 — interrupt 중이면 resume
-    state = _graph_app.get_state(config)
+    print(f"📥 msg='{message[:50]}' session={session_id}")
+    result = orchestrator(message)
+    response_text = str(result)
 
-    if state.tasks:
-        # interrupt 상태 (wait_*) → resume
-        print(f"🔄 [resume] msg='{message[:50]}'")
-        result = _graph_app.invoke(Command(resume=message), config)
-    else:
-        # 새 메시지 → agent_node 실행
-        prev_messages = state.values.get("messages", []) if state.values else []
-        print(f"📥 [new] msg='{message[:50]}' prev_msgs={len(prev_messages)} thread={thread_id}")
-
-        result = _graph_app.invoke({
-            "messages": prev_messages + [HumanMessage(content=message)],
-            "flow_state": state.values.get("flow_state", "idle") if state.values else "idle",
-            "flow_data": state.values.get("flow_data", {}) if state.values else {},
-            "flow_pending_target": state.values.get("flow_pending_target") if state.values else None,
-            "flow_history": state.values.get("flow_history", []) if state.values else [],
-            "response_message": "",
-            "response_buttons": [],
-            "response_mode": "idle",
-            "response_step": None,
-            "context": context or {},
-        }, config)
-
-    # interrupt 발생 여부 확인
-    new_state = _graph_app.get_state(config)
-    if new_state.tasks:
-        # interrupt 된 상태 — interrupt value가 응답
-        interrupt_val = new_state.tasks[0].interrupts[0].value
-        if isinstance(interrupt_val, dict):
-            return ChatResponse(
-                message=interrupt_val.get("message", ""),
-                buttons=[Button(**b) for b in interrupt_val.get("buttons", [])],
-                mode=interrupt_val.get("mode", "guide"),
-                step=StepProgress(**interrupt_val["step"]) if interrupt_val.get("step") else None,
-            )
-        # 문자열 interrupt (슬롯 필링)
-        return ChatResponse(message=str(interrupt_val))
-
-    # 정상 완료
-    msg = result.get("response_message", "")
-    buttons = result.get("response_buttons", [])
-    mode = result.get("response_mode", "idle")
-    step = result.get("response_step")
-
-    return ChatResponse(
-        message=msg or "처리 완료.",
-        buttons=[Button(**b) for b in buttons],
-        mode=mode,
-        step=StepProgress(**step) if step else None,
-    )
+    return ChatResponse(message=response_text)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -198,57 +111,18 @@ async def chat(req: ChatRequest):
     try:
         _inject_token(req.context)
         session_id = req.session_id or _DEFAULT_SESSION
-        return _handle_graph(req.message.strip(), session_id, req.context)
+        return _handle_message(req.message.strip(), session_id, req.context)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return ChatResponse(message=f"오류 발생: {e}")
 
 
-@app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
-    _inject_token(req.context)
-    session_id = req.session_id or _DEFAULT_SESSION
-
-    async def event_generator():
-        yield f"event: tool_start\ndata: {json.dumps({'tool': 'flow', 'message': '처리 중...'}, ensure_ascii=False)}\n\n"
-
-        result = _handle_graph(req.message.strip(), session_id, req.context)
-
-        final_data = {
-            "message": result.message,
-            "buttons": [b.model_dump(exclude_none=True) for b in result.buttons],
-            "mode": result.mode,
-            "step": result.step.model_dump() if result.step else None,
-        }
-        yield f"event: message\ndata: {json.dumps(final_data, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 @app.post("/reset")
 async def reset():
-    global _graph_app, _session_threads
-    _session_threads.clear()
-    _graph_app = create_app(guardrail_config=_guardrail_config)
+    global _sessions
+    _sessions.clear()
     return {"status": "ok"}
-
-
-# eval_scenarios.py에서 사용하는 호환 함수
-def _extract_buttons(raw: str) -> list[dict]:
-    """레거시 호환: 에이전트 응답에서 버튼 추출 (이제 graph가 직접 반환)."""
-    import re
-    btn_match = re.search(r'```json:buttons\s*\n(.*?)\n```', raw, re.DOTALL)
-    if btn_match:
-        try:
-            return json.loads(btn_match.group(1))
-        except json.JSONDecodeError:
-            pass
-    return []
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -294,7 +168,7 @@ header h1 { font-size: 18px; font-weight: 600; }
 </head>
 <body>
 <header>
-  <h1>어스플러스 상품 세팅 에이전트 (LangGraph)</h1>
+  <h1>상품 세팅 에이전트 (멀티 에이전트)</h1>
   <div style="display:flex;gap:8px;align-items:center;">
     <button id="token-btn" onclick="toggleToken()" style="background:#16213e;color:white;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:12px;">토큰 설정</button>
     <span id="token-status" style="font-size:11px;color:#aaa;"></span>
@@ -302,14 +176,14 @@ header h1 { font-size: 18px; font-weight: 600; }
   </div>
 </header>
 <div id="token-area" style="display:none;padding:8px 24px;background:#f0f0f0;border-bottom:1px solid #ddd;">
-  <div style="font-size:12px;color:#666;margin-bottom:4px;">관리자센터 sessionStorage에서 토큰을 복사해주세요 (dev tools > Application > Session Storage > accessToken)</div>
+  <div style="font-size:12px;color:#666;margin-bottom:4px;">관리자센터 sessionStorage에서 토큰을 복사해주세요</div>
   <div style="display:flex;gap:8px;">
     <input id="token-input" type="text" placeholder="eyJhbGci..." style="flex:1;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:monospace;" />
     <button onclick="saveToken()" style="background:#1a1a2e;color:white;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;">저장</button>
   </div>
 </div>
 <div id="chat-container">
-  <div class="msg system">상품 세팅을 시작하려면 마스터 이름이나 요청을 입력하세요.</div>
+  <div class="msg system">상품 세팅을 시작하려면 요청을 입력하세요.</div>
 </div>
 <div id="input-area">
   <input id="msg-input" type="text" placeholder="메시지 입력..." autocomplete="off" />
@@ -320,7 +194,6 @@ const container = document.getElementById('chat-container');
 const input = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
 
-// 토큰 관리
 function getToken() { return localStorage.getItem('agent_token') || ''; }
 function toggleToken() {
   const area = document.getElementById('token-area');
@@ -335,7 +208,6 @@ function saveToken() {
     document.getElementById('token-area').style.display = 'none';
   }
 }
-// 초기 상태 표시
 if (getToken()) document.getElementById('token-status').textContent = '토큰 있음';
 
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
@@ -386,7 +258,7 @@ async function send() {
 
 async function resetChat() {
   await fetch('/reset', { method: 'POST' });
-  container.innerHTML = '<div class="msg system">세션이 초기화되었습니다. 새로운 상품 세팅을 시작해주세요.</div>';
+  container.innerHTML = '<div class="msg system">세션이 초기화되었습니다.</div>';
   input.focus();
 }
 
