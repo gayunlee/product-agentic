@@ -102,11 +102,45 @@ E10. "왜 마스터가 안 보여?" → "오피셜클럽을 말씀하시는 것 
 """
 
 
-def create_executor_agent(validator: Agent) -> Agent:
+# 권한 기반 Tool 필터링
+# roleType=ALL → 전체, PART → permissionSections에 해당하는 Tool만, NONE → 사용 불가
+PERMISSION_TOOL_MAP = {
+    "PRODUCT": [
+        "get_product_page_list", "get_product_page_detail",
+        "get_product_list_by_page",
+        "update_product_display", "update_product_page_status",
+        "update_product_page",
+    ],
+    "MASTER": [
+        "search_masters", "get_master_detail", "get_master_groups",
+        "get_series_list", "get_community_settings",
+        "update_main_product_setting",
+    ],
+}
+
+# 권한 무관 공통 Tool
+COMMON_TOOLS = ["navigate", "validate"]
+
+
+def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
+    """권한에 따라 Tool 목록을 필터링합니다."""
+    if role_type == "ALL":
+        return all_tools
+
+    allowed_names = set(COMMON_TOOLS)
+    for section in permission_sections:
+        allowed_names.update(PERMISSION_TOOL_MAP.get(section, []))
+
+    return [t for t in all_tools if getattr(t, '__name__', getattr(t, 'name', '')) in allowed_names]
+
+
+def create_executor_agent(validator: Agent, role_type: str = "ALL", permission_sections: list[str] | None = None) -> Agent:
     """수행 에이전트를 생성합니다.
 
     Args:
         validator: 검증 에이전트 (@tool 함수로 래핑하여 사용)
+        role_type: 유저 권한 (ALL, PART, NONE)
+        permission_sections: 권한 섹션 목록 (PART일 때 사용)
     """
 
     @strands_tool
@@ -125,27 +159,31 @@ def create_executor_agent(validator: Agent) -> Agent:
         result = validator(request)
         return str(result)
 
+    all_tools = [
+        # 조회
+        search_masters,
+        get_master_detail,
+        get_master_groups,
+        get_series_list,
+        get_product_page_list,
+        get_product_page_detail,
+        get_product_list_by_page,
+        get_community_settings,
+        # 변경
+        update_product_display,
+        update_product_page_status,
+        update_product_page,
+        update_main_product_setting,
+        # 네비게이션
+        navigate,
+        # 검증
+        validate,
+    ]
+
+    tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
+
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
-        tools=[
-            # 조회
-            search_masters,
-            get_master_detail,
-            get_master_groups,
-            get_series_list,
-            get_product_page_list,
-            get_product_page_detail,
-            get_product_list_by_page,
-            get_community_settings,
-            # 변경
-            update_product_display,
-            update_product_page_status,
-            update_product_page,
-            update_main_product_setting,
-            # 네비게이션
-            navigate,
-            # 검증
-            validate,
-        ],
+        tools=tools,
         system_prompt=EXECUTOR_PROMPT,
     )
