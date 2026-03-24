@@ -74,8 +74,8 @@ def create_product_agent(
             logger.warning(f"Guardrail 설정 실패: {e}")
 
     model = BedrockModel(
-        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        region_name="us-west-2",
+        model_id=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+        region_name=os.environ.get("AWS_REGION", "ap-northeast-2"),
         **guardrail_kwargs,
     )
 

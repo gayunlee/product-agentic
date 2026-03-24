@@ -17,7 +17,7 @@ from bedrock_agentcore.memory.constants import ConversationalMessage, MessageRol
 logger = logging.getLogger(__name__)
 
 MEMORY_ID_PATH = Path(__file__).parent.parent.parent / "memory_id.json"
-REGION = "us-west-2"
+REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 # 시스템 프롬프트에 주입할 컨텍스트 최대 글자 수
 MAX_CONTEXT_CHARS = 2000

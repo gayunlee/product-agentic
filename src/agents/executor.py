@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from strands import Agent, tool as strands_tool
 
 from src.tools.admin_api import (
@@ -124,7 +125,7 @@ def create_executor_agent(validator: Agent) -> Agent:
         return str(result)
 
     return Agent(
-        model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
         tools=[
             # 조회
             search_masters,

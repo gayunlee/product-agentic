@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from strands import Agent, tool as strands_tool
 
 ORCHESTRATOR_PROMPT = """당신은 관리자센터 상품 세팅 오케스트레이터입니다.
@@ -108,7 +109,7 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
         return str(result)
 
     return Agent(
-        model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
         tools=[ask_executor, ask_domain_expert],
         system_prompt=ORCHESTRATOR_PROMPT,
     )

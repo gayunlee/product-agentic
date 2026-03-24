@@ -340,7 +340,7 @@ VALIDATOR_PROMPT = """당신은 상품 세팅 검증 에이전트입니다.
 def create_validator_agent() -> Agent:
     """검증 에이전트를 생성합니다."""
     return Agent(
-        model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
         tools=[check_prerequisites, check_idempotency, diagnose_visibility],
         system_prompt=VALIDATOR_PROMPT,
     )

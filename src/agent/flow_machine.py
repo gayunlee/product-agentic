@@ -15,8 +15,8 @@ from src.tools.admin_api import _client, _safe_request
 from langfuse import observe
 
 # ── LLM 대화 관리자 ──
-_bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
-_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
+_MODEL = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0")
 
 MANAGER_PROMPT = """당신은 어스플러스 관리자센터 상품 세팅 AI 어시스턴트입니다.
 운영매니저의 요청을 이해하고, 적절한 액션을 결정합니다.
