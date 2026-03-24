@@ -25,6 +25,11 @@ from src.tools.admin_api import (
     update_main_product_setting,
     navigate,
 )
+from src.agents.validator import (
+    check_prerequisites,
+    check_idempotency,
+    diagnose_visibility,
+)
 
 EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트입니다.
 
@@ -45,17 +50,17 @@ API를 호출하여 상태를 변경합니다.
 
 ### 진단 모드
 "왜 안 보여?", "노출이 안 돼", "안 나와" 같은 질문이 오면 반드시 이 모드로 동작합니다.
-- ⚠️ 직접 판단하지 마세요. 반드시 validate Tool을 호출하세요.
-- "왜 상품/상품페이지/마스터가 안 보여?" → validate("diagnose_visibility for master_id={cmsId}")
+- ⚠️ 직접 판단하지 마세요. 반드시 diagnose_visibility Tool을 호출하세요.
+- "왜 상품/상품페이지/마스터가 안 보여?" → diagnose_visibility(master_id={cmsId})
 - "게시판이 왜 안 보여?" → get_community_settings로 진단
 - "응원하기가 왜 안 보여?" → get_community_settings로 진단
-- validate 결과의 first_failure와 recommendation을 유저에게 전달
+- diagnose_visibility 결과의 first_failure와 recommendation을 유저에게 전달
 
 ## 규칙 (반드시 준수)
 
 E1. 슬롯 필링: 오피셜클럽 → 상품 페이지 → 상품 옵션 순서로 좁힌다.
 E2. 여러 개일 때 반드시 목록 제시 후 선택 받는다 (자동 선택 금지).
-E3. 쓰기 API 전에 반드시 validator 호출 (check_prerequisites + check_idempotency).
+E3. 쓰기 API 전에 반드시 check_prerequisites + check_idempotency Tool을 호출.
 E4. 쓰기 API 전에 반드시 유저 확인 (interrupt).
 E5. 생성은 직접 하지 않는다 → navigate()로 이동 안내.
 E6. 시리즈 생성 = 파트너센터 안내 (관리자센터 아님).
@@ -80,15 +85,15 @@ E10. "왜 마스터가 안 보여?" → "오피셜클럽을 말씀하시는 것 
 ### 실행 모드
 유저: 상품페이지 비공개해줘
 → search_masters → get_product_page_list → interrupt(목록 제시)
-→ validator(check_prerequisites) → validator(check_idempotency)
+→ check_prerequisites(action, context) → check_idempotency(action, context)
 → interrupt("비공개 하시겠어요?") → update_product_page_status → 완료 + 확인 링크
 
 ### 진단 모드
 유저: 왜 상품페이지 노출이 안돼?
 → search_masters("조조형우") → cmsId 확보
-→ validate("diagnose_visibility for master_id=35")
+→ diagnose_visibility(master_id="35")
 → 결과에서 first_failure 확인 → "메인 상품 페이지가 INACTIVE입니다"
-→ recommendation 전달 + navigate("main_product", {"master_id": "35"})
+→ recommendation 전달 + navigate("main_product")
 
 유저: 게시판이 왜 안 보여?
 → search_masters → get_community_settings(cmsId) → postBoardActiveStatus 확인
@@ -180,7 +185,7 @@ PERMISSION_TOOL_MAP = {
 }
 
 # 권한 무관 공통 Tool
-COMMON_TOOLS = ["navigate", "validate"]
+COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility"]
 
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
@@ -195,31 +200,13 @@ def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sect
     return [t for t in all_tools if getattr(t, '__name__', getattr(t, 'name', '')) in allowed_names]
 
 
-def create_executor_agent(validator: Agent, role_type: str = "ALL", permission_sections: list[str] | None = None) -> Agent:
-    """수행 에이전트를 생성합니다.
+def create_executor_agent(role_type: str = "ALL", permission_sections: list[str] | None = None) -> Agent:
+    """수행 에이전트를 생성합니다. 검증 함수를 직접 Tool로 등록 (LLM 경유 없음).
 
     Args:
-        validator: 검증 에이전트 (@tool 함수로 래핑하여 사용)
         role_type: 유저 권한 (ALL, PART, NONE)
         permission_sections: 권한 섹션 목록 (PART일 때 사용)
     """
-
-    @strands_tool
-    def validate(request: str) -> str:
-        """검증 에이전트. 3가지 기능:
-        1. check_prerequisites(action, context) — 액션 실행 전 사전조건 체크
-        2. check_idempotency(action, context) — 이미 처리된 건 아닌지 확인
-        3. diagnose_visibility(master_id) — 상품 노출 안 되는 원인 진단 (5단계 체인)
-
-        쓰기 API(update_*) 호출 전에 반드시 check_prerequisites와 check_idempotency를 먼저 호출하세요.
-        진단 요청 시에는 diagnose_visibility를 호출하세요.
-
-        Args:
-            request: 검증 요청 내용 (예: "check_prerequisites for update_product_page_status with product_page_id=148")
-        """
-        result = validator(request)
-        return str(result)
-
     all_tools = [
         # 조회
         search_masters,
@@ -237,8 +224,10 @@ def create_executor_agent(validator: Agent, role_type: str = "ALL", permission_s
         update_main_product_setting,
         # 네비게이션
         navigate,
-        # 검증
-        validate,
+        # 검증 (함수 직접 — LLM 경유 없이 즉시 실행)
+        check_prerequisites,
+        check_idempotency,
+        diagnose_visibility,
     ]
 
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
