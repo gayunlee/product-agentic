@@ -170,14 +170,16 @@ def _extract_buttons(text: str) -> list[dict]:
     if re.search(r'히든.*처리.*하시겠', text):
         buttons.append({"type": "action", "label": "히든 처리하기", "actionId": "toggle_hidden", "variant": "primary"})
 
-    # 3. 페이지 이동 안내 (URL 없는 경우) — navigate Tool 결과 패턴
+    # 3. 페이지 이동 안내 (URL 없는 경우) — 텍스트 패턴 매칭
     nav_patterns = [
-        (r'메인 상품.*페이지.*설정.*이동|메인 상품.*설정.*변경', '/main-product', '메인 상품 페이지 설정'),
+        (r'메인 상품.*페이지.*설정|메인 상품.*관리|메인.*페이지.*설정', '/product/page/list', '메인 상품 페이지 관리'),
         (r'상품 페이지 생성.*이동|페이지.*생성.*화면', '/product/page/create', '상품 페이지 생성'),
-        (r'게시판 설정.*이동', '/board/setting', '게시판 설정'),
-        (r'응원하기 관리.*이동', '/donation', '응원하기 관리'),
-        (r'편지글 관리.*이동', '/cs/letter', '편지글 관리'),
-        (r'파트너센터.*이동|파트너센터.*접속', 'https://master.us-insight.com', '파트너센터'),
+        (r'게시판 설정', '/board/setting', '게시판 설정'),
+        (r'응원하기 관리|응원하기.*설정', '/donation', '응원하기 관리'),
+        (r'편지글 관리|편지글.*설정', '/cs/letter', '편지글 관리'),
+        (r'파트너센터.*이동|파트너센터.*접속|파트너센터에서', 'https://master.us-insight.com', '파트너센터'),
+        (r'오피셜클럽 생성', '/official-club/create', '오피셜클럽 생성'),
+        (r'마스터 관리|마스터.*페이지', '/master', '마스터 관리'),
     ]
     for pattern, url, label in nav_patterns:
         if re.search(pattern, text) and ("navigate", url) not in seen:

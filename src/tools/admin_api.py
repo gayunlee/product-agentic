@@ -410,19 +410,32 @@ def navigate(page: str, params: dict | None = None) -> dict:
         {"url": str, "label": str} — UI에서 버튼으로 렌더링
     """
     PAGE_MAP = {
+        # 상품
         "product_page_list": {"url": "/product", "label": "상품 페이지 목록"},
-        "product_page_create": {"url": "/product/create", "label": "상품 페이지 생성"},
-        "product_page_edit": {"url": "/product/page/{id}", "label": "상품 페이지 수정"},
+        "product_page_create": {"url": "/product/page/create", "label": "상품 페이지 생성"},
+        "product_page_edit": {"url": "/product/page/{id}?tab=settings", "label": "상품 페이지 수정"},
+        "product_page_options": {"url": "/product/page/{id}?tab=options", "label": "상품 옵션 관리"},
+        "product_page_letters": {"url": "/product/page/{id}?tab=letters", "label": "편지글 관리"},
+        "product_page_caution": {"url": "/product/page/{id}?tab=caution", "label": "유의사항 관리"},
+        "product_create": {"url": "/product/create?productPageId={productPageId}&productType={productType}&masterId={masterId}", "label": "상품 옵션 등록"},
+        "product_edit": {"url": "/product/{productId}?productPageId={productPageId}&productType={productType}&masterId={masterId}", "label": "상품 옵션 수정"},
+        # 메인 상품 페이지
+        "main_product": {"url": "/product/page/list", "label": "메인 상품 페이지 관리"},
+        # 오피셜클럽/마스터
+        "official_club_list": {"url": "/official-club", "label": "오피셜클럽 목록"},
         "official_club": {"url": "/official-club/{masterId}", "label": "오피셜클럽 상세"},
         "official_club_create": {"url": "/official-club/create", "label": "오피셜클럽 생성"},
         "master_list": {"url": "/master", "label": "마스터 관리"},
-        "main_product": {"url": "/main-product", "label": "메인 상품 페이지 설정"},
+        "master_page": {"url": "/master/page", "label": "마스터 페이지 관리"},
+        # 커뮤니티
         "board_setting": {"url": "/board/setting", "label": "게시판 설정"},
         "board": {"url": "/board", "label": "게시글 관리"},
         "donation": {"url": "/donation", "label": "응원하기 관리"},
         "letter": {"url": "/cs/letter", "label": "편지글 관리"},
-        "partner_series": {"url": "https://master.us-insight.com/series/create", "label": "파트너센터 시리즈 생성"},
-        "refund": {"url": "/cs/refund", "label": "환불 처리"},
+        # 외부
+        "partner_series": {"url": "https://master.us-insight.com", "label": "파트너센터 시리즈 생성"},
+        # 기타
+        "product_sales": {"url": "/product/sales", "label": "상품 결제 내역"},
         "subscribe": {"url": "/subscribe", "label": "구독 관리"},
     }
 
