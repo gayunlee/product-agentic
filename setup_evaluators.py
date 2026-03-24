@@ -14,7 +14,11 @@ import boto3
 import json
 import os
 
-client = boto3.client("bedrock-agentcore-control", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
+# Evaluations는 서울(ap-northeast-2) 미지원
+# 도쿄(ap-northeast-1) 또는 오레곤(us-west-2) 사용
+# 현재 IAM 권한이 오레곤에만 있으므로 오레곤 유지
+EVAL_REGION = os.environ.get("EVAL_REGION", "us-west-2")
+client = boto3.client("bedrock-agentcore-control", region_name=EVAL_REGION)
 
 EVALUATORS = [
     {
