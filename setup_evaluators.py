@@ -12,6 +12,7 @@ load_dotenv()
 
 import boto3
 import json
+import os
 
 client = boto3.client("bedrock-agentcore-control", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
 
