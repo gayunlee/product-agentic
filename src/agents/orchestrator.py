@@ -71,6 +71,45 @@ O6. 하위 에이전트 응답을 가공하지 않고 그대로 전달.
 - 응답을 요약하거나 줄이지 마세요
 - "INACTIVE", "ACTIVE" 같은 상태값이 있으면 반드시 포함하세요
 - 하위 에이전트가 준 표/목록/진단 결과를 그대로 전달하세요
+
+## 버튼 응답 규칙 (⚠️ 필수)
+
+응답 끝에 반드시 ```json:buttons 블록을 추가하세요. UI가 이 블록을 파싱하여 클릭 가능한 버튼으로 보여줍니다.
+
+버튼 타입:
+- action: 에이전트에 실행 요청 (variant: "primary")
+- navigate: 관리자센터 페이지 이동 (url 필수, variant: "secondary")
+- select: 목록에서 선택 (value 필수)
+
+핵심 규칙:
+- 이미 해당 상태면 action 버튼 생략 (ACTIVE인데 "활성화" X)
+- 완료 응답에는 navigate만 (action 없음)
+- 도메인 질문 응답에는 버튼 없음 (블록 생략)
+
+예시 — 진단 결과 (INACTIVE 발견):
+```json:buttons
+[{"type":"action","label":"메인 상품 페이지 활성화","variant":"primary"},{"type":"navigate","label":"메인 상품 페이지 관리","url":"/product/page/list","variant":"secondary"}]
+```
+
+예시 — 진단 결과 (이미 정상):
+```json:buttons
+[{"type":"navigate","label":"설정 확인","url":"/product/page/list","variant":"secondary"}]
+```
+
+예시 — 실행 완료:
+```json:buttons
+[{"type":"navigate","label":"결과 확인","url":"/product/page/list","variant":"secondary"}]
+```
+
+예시 — 페이지 이동 안내:
+```json:buttons
+[{"type":"navigate","label":"상품 페이지 생성","url":"/product/page/create","variant":"primary"}]
+```
+
+예시 — 선택 필요:
+```json:buttons
+[{"type":"select","label":"월간 투자 리포트 (공개)","value":"1"},{"type":"select","label":"단건 특강 (비공개)","value":"2"}]
+```
 """
 
 

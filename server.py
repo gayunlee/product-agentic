@@ -148,98 +148,20 @@ def _extract_text(result) -> str:
     return str(result)
 
 
-def _extract_buttons(text: str) -> list[dict]:
-    """에이전트 응답 텍스트에서 버튼을 추출."""
+def _extract_buttons(text: str) -> tuple[str, list[dict]]:
+    """에이전트 응답에서 ```json:buttons 블록을 파싱하여 버튼 추출 + 텍스트에서 제거."""
     import re
-    buttons = []
-    seen = set()
 
-    # 1. 마크다운 링크 [라벨](URL) → navigate 버튼
-    for label, url in re.findall(r'\[([^\]]+)\]\((/[^\)]+)\)', text):
-        clean = label.replace(' →', '').replace('→', '').strip()
-        key = ("navigate", url)
-        if key not in seen:
-            seen.add(key)
-            buttons.append({"type": "navigate", "label": clean, "url": url, "variant": "primary"})
+    match = re.search(r'```json:buttons\s*\n(.*?)\n```', text, re.DOTALL)
+    if match:
+        try:
+            buttons = json.loads(match.group(1))
+            clean_text = text[:match.start()].rstrip()
+            return clean_text, buttons
+        except json.JSONDecodeError:
+            pass
 
-    # 2. 확인/실행 제안 → action 버튼 (구체적 params 포함)
-    # 텍스트에서 ID 추출
-    master_id = ""
-    page_id = ""
-    product_id = ""
-    m = re.search(r'cmsId[:\s]*["\']?(\d+)', text)
-    if m:
-        master_id = m.group(1)
-    if not master_id:
-        m = re.search(r'master_id[=:\s]*["\']?(\d+)', text)
-        if m:
-            master_id = m.group(1)
-    if not master_id:
-        m = re.search(r'cmsId:\s*(\d+)|cmsId\s*=\s*(\d+)|마스터.*?(\d+)', text)
-        if m:
-            master_id = next(g for g in m.groups() if g)
-    m = re.search(r'(?:페이지 ID|page_id|pageId)[:\s]*["\']?([\w-]+)', text)
-    if m:
-        page_id = m.group(1)
-    m = re.search(r'(?:상품 ID|product_id|productId)[:\s]*["\']?(\d+)', text)
-    if m:
-        product_id = m.group(1)
-
-    if re.search(r'비공개.*처리.*하시겠|비공개.*하시겠', text):
-        action_params = {"type": "execute", "target": "toggle_inactive", "params": {}}
-        if page_id:
-            action_params["params"]["product_page_id"] = page_id
-        if product_id:
-            action_params["params"]["product_id"] = product_id
-        buttons.append({"type": "action", "label": "비공개 처리하기", "actionId": "toggle_inactive", "action": action_params, "variant": "primary"})
-
-    if re.search(r'공개.*처리.*하시겠|공개로.*변경|활성화.*하시겠|ACTIVE.*변경.*하시겠', text):
-        action_params = {"type": "execute", "target": "toggle_active", "params": {}}
-        if page_id:
-            action_params["params"]["product_page_id"] = page_id
-        if master_id:
-            action_params["params"]["master_id"] = master_id
-        buttons.append({"type": "action", "label": "활성화하기", "actionId": "toggle_active", "action": action_params, "variant": "primary"})
-
-    if re.search(r'메인.*상품.*ACTIVE.*변경|메인.*활성화|메인.*상품.*페이지.*설정.*ACTIVE', text):
-        # action 클릭 시 에이전트에 보낼 메시지
-        action_params = {"type": "execute", "target": "activate_main_product", "params": {"master_id": master_id}}
-        buttons.append({"type": "action", "label": "메인 상품 페이지 활성화", "actionId": "activate_main_product", "action": action_params, "variant": "primary"})
-
-    if re.search(r'히든.*처리.*하시겠', text):
-        action_params = {"type": "execute", "target": "toggle_hidden", "params": {}}
-        if page_id:
-            action_params["params"]["product_page_id"] = page_id
-        buttons.append({"type": "action", "label": "히든 처리하기", "actionId": "toggle_hidden", "action": action_params, "variant": "primary"})
-
-    # 3. 페이지 이동 안내 (URL 없는 경우) — 텍스트 패턴 매칭
-    nav_patterns = [
-        (r'메인 상품.*페이지.*설정|메인 상품.*관리|메인.*페이지.*설정', '/product/page/list', '메인 상품 페이지 관리'),
-        (r'상품 페이지 생성.*이동|페이지.*생성.*화면', '/product/page/create', '상품 페이지 생성'),
-        (r'게시판 설정', '/board/setting', '게시판 설정'),
-        (r'응원하기 관리|응원하기.*설정', '/donation', '응원하기 관리'),
-        (r'편지글 관리|편지글.*설정', '/cs/letter', '편지글 관리'),
-        (r'파트너센터.*이동|파트너센터.*접속|파트너센터에서', 'https://master.us-insight.com', '파트너센터'),
-        (r'오피셜클럽 생성', '/official-club/create', '오피셜클럽 생성'),
-        (r'마스터 관리|마스터.*페이지', '/master', '마스터 관리'),
-    ]
-    for pattern, url, label in nav_patterns:
-        if re.search(pattern, text) and ("navigate", url) not in seen:
-            seen.add(("navigate", url))
-            buttons.append({"type": "navigate", "label": label, "url": url, "variant": "primary"})
-
-    # 4. 목록 선택 패턴 ("1️⃣", "2️⃣" 등)
-    choices = re.findall(r'[1-9]️⃣\s*\|?\s*\**([^*|\n]{2,30})\**', text)
-    if choices and re.search(r'선택해|어느.*인가요|어떤.*인가요|어느 것', text):
-        for i, choice in enumerate(choices[:4], 1):
-            clean = choice.strip().rstrip(' |')
-            buttons.append({
-                "type": "action", "label": clean, "actionId": f"choice_{i}",
-                "action": {"type": "select", "target": clean, "params": {"index": str(i)}},
-                "variant": "secondary",
-            })
-
-    return buttons
+    return text, []
 
 
 def _detect_mode(text: str) -> str:
@@ -262,13 +184,9 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     print(f"📥 msg='{message[:50]}' session={session_id}")
     result = orchestrator(message)
 
-    text = _extract_text(result)
+    raw_text = _extract_text(result)
+    text, buttons = _extract_buttons(raw_text)
     mode = _detect_mode(text)
-
-    # 완료 응답에는 action 버튼 제거 (navigate만 유지)
-    buttons = _extract_buttons(text)
-    if mode == 'done':
-        buttons = [b for b in buttons if b['type'] == 'navigate']
 
     return ChatResponse(message=text, buttons=buttons, mode=mode)
 
