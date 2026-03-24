@@ -148,6 +148,67 @@ def _extract_text(result) -> str:
     return str(result)
 
 
+def _extract_buttons(text: str) -> list[dict]:
+    """에이전트 응답 텍스트에서 버튼을 추출."""
+    import re
+    buttons = []
+    seen = set()
+
+    # 1. 마크다운 링크 [라벨](URL) → navigate 버튼
+    for label, url in re.findall(r'\[([^\]]+)\]\((/[^\)]+)\)', text):
+        clean = label.replace(' →', '').replace('→', '').strip()
+        key = ("navigate", url)
+        if key not in seen:
+            seen.add(key)
+            buttons.append({"type": "navigate", "label": clean, "url": url, "variant": "primary"})
+
+    # 2. 확인/실행 제안 → action 버튼
+    if re.search(r'비공개.*처리.*하시겠|비공개.*하시겠', text):
+        buttons.append({"type": "action", "label": "비공개 처리하기", "actionId": "toggle_inactive", "variant": "primary"})
+    if re.search(r'공개.*처리.*하시겠|공개.*하시겠|활성화.*하시겠', text) and '비공개' not in text[:20]:
+        buttons.append({"type": "action", "label": "활성화하기", "actionId": "toggle_active", "variant": "primary"})
+    if re.search(r'히든.*처리.*하시겠', text):
+        buttons.append({"type": "action", "label": "히든 처리하기", "actionId": "toggle_hidden", "variant": "primary"})
+
+    # 3. 페이지 이동 안내 (URL 없는 경우) — navigate Tool 결과 패턴
+    nav_patterns = [
+        (r'메인 상품.*페이지.*설정.*이동|메인 상품.*설정.*변경', '/main-product', '메인 상품 페이지 설정'),
+        (r'상품 페이지 생성.*이동|페이지.*생성.*화면', '/product/page/create', '상품 페이지 생성'),
+        (r'게시판 설정.*이동', '/board/setting', '게시판 설정'),
+        (r'응원하기 관리.*이동', '/donation', '응원하기 관리'),
+        (r'편지글 관리.*이동', '/cs/letter', '편지글 관리'),
+        (r'파트너센터.*이동|파트너센터.*접속', 'https://master.us-insight.com', '파트너센터'),
+    ]
+    for pattern, url, label in nav_patterns:
+        if re.search(pattern, text) and ("navigate", url) not in seen:
+            seen.add(("navigate", url))
+            buttons.append({"type": "navigate", "label": label, "url": url, "variant": "primary"})
+
+    # 4. 목록 선택 패턴 ("1️⃣", "2️⃣" 등)
+    choices = re.findall(r'[1-9]️⃣\s*\|?\s*\**([^*|\n]{2,30})\**', text)
+    if choices and re.search(r'선택해|어느.*인가요|어떤.*인가요|어느 것', text):
+        for i, choice in enumerate(choices[:4], 1):
+            clean = choice.strip().rstrip(' |')
+            buttons.append({
+                "type": "action", "label": clean, "actionId": f"choice_{i}",
+                "action": {"type": "select", "target": clean, "params": {"index": str(i)}},
+                "variant": "secondary",
+            })
+
+    return buttons
+
+
+def _detect_mode(text: str) -> str:
+    """응답 텍스트에서 현재 모드를 감지."""
+    if any(k in text for k in ['진단 결과', '노출 진단', '체크 항목', '실패 지점']):
+        return 'diagnose'
+    if any(k in text for k in ['이동하세요', '페이지로 이동', 'navigate']):
+        return 'guide'
+    if any(k in text for k in ['처리하시겠', '변경하시겠', '진행하시겠']):
+        return 'execute'
+    return 'idle'
+
+
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
     """오케스트레이터를 호출하고 결과를 ChatResponse로 변환."""
     orchestrator = _get_orchestrator(session_id)
@@ -155,7 +216,11 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     print(f"📥 msg='{message[:50]}' session={session_id}")
     result = orchestrator(message)
 
-    return ChatResponse(message=_extract_text(result))
+    text = _extract_text(result)
+    buttons = _extract_buttons(text)
+    mode = _detect_mode(text)
+
+    return ChatResponse(message=text, buttons=buttons, mode=mode)
 
 
 @app.post("/chat", response_model=ChatResponse)
