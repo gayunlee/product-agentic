@@ -162,13 +162,55 @@ def _extract_buttons(text: str) -> list[dict]:
             seen.add(key)
             buttons.append({"type": "navigate", "label": clean, "url": url, "variant": "primary"})
 
-    # 2. 확인/실행 제안 → action 버튼
+    # 2. 확인/실행 제안 → action 버튼 (구체적 params 포함)
+    # 텍스트에서 ID 추출
+    master_id = ""
+    page_id = ""
+    product_id = ""
+    m = re.search(r'cmsId[:\s]*["\']?(\d+)', text)
+    if m:
+        master_id = m.group(1)
+    if not master_id:
+        m = re.search(r'master_id[=:\s]*["\']?(\d+)', text)
+        if m:
+            master_id = m.group(1)
+    if not master_id:
+        m = re.search(r'cmsId:\s*(\d+)|cmsId\s*=\s*(\d+)|마스터.*?(\d+)', text)
+        if m:
+            master_id = next(g for g in m.groups() if g)
+    m = re.search(r'(?:페이지 ID|page_id|pageId)[:\s]*["\']?([\w-]+)', text)
+    if m:
+        page_id = m.group(1)
+    m = re.search(r'(?:상품 ID|product_id|productId)[:\s]*["\']?(\d+)', text)
+    if m:
+        product_id = m.group(1)
+
     if re.search(r'비공개.*처리.*하시겠|비공개.*하시겠', text):
-        buttons.append({"type": "action", "label": "비공개 처리하기", "actionId": "toggle_inactive", "variant": "primary"})
-    if re.search(r'공개.*처리.*하시겠|공개.*하시겠|활성화.*하시겠', text) and '비공개' not in text[:20]:
-        buttons.append({"type": "action", "label": "활성화하기", "actionId": "toggle_active", "variant": "primary"})
+        action_params = {"type": "execute", "target": "toggle_inactive", "params": {}}
+        if page_id:
+            action_params["params"]["product_page_id"] = page_id
+        if product_id:
+            action_params["params"]["product_id"] = product_id
+        buttons.append({"type": "action", "label": "비공개 처리하기", "actionId": "toggle_inactive", "action": action_params, "variant": "primary"})
+
+    if re.search(r'공개.*처리.*하시겠|공개로.*변경|활성화.*하시겠|ACTIVE.*변경.*하시겠', text):
+        action_params = {"type": "execute", "target": "toggle_active", "params": {}}
+        if page_id:
+            action_params["params"]["product_page_id"] = page_id
+        if master_id:
+            action_params["params"]["master_id"] = master_id
+        buttons.append({"type": "action", "label": "활성화하기", "actionId": "toggle_active", "action": action_params, "variant": "primary"})
+
+    if re.search(r'메인.*상품.*ACTIVE.*변경|메인.*활성화|메인.*상품.*페이지.*설정.*ACTIVE', text):
+        # action 클릭 시 에이전트에 보낼 메시지
+        action_params = {"type": "execute", "target": "activate_main_product", "params": {"master_id": master_id}}
+        buttons.append({"type": "action", "label": "메인 상품 페이지 활성화", "actionId": "activate_main_product", "action": action_params, "variant": "primary"})
+
     if re.search(r'히든.*처리.*하시겠', text):
-        buttons.append({"type": "action", "label": "히든 처리하기", "actionId": "toggle_hidden", "variant": "primary"})
+        action_params = {"type": "execute", "target": "toggle_hidden", "params": {}}
+        if page_id:
+            action_params["params"]["product_page_id"] = page_id
+        buttons.append({"type": "action", "label": "히든 처리하기", "actionId": "toggle_hidden", "action": action_params, "variant": "primary"})
 
     # 3. 페이지 이동 안내 (URL 없는 경우) — 텍스트 패턴 매칭
     nav_patterns = [
