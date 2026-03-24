@@ -39,10 +39,13 @@ trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
 import json
+import asyncio
+import queue
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agents import create_orchestrator
@@ -95,15 +98,64 @@ def _inject_token(context: dict | None):
         print("⚠️ context 없음 → .env 토큰 사용")
 
 
+# Tool 이름 → 한국어 진행 상황 매핑
+TOOL_PROGRESS = {
+    "ask_executor": "🔧 수행 에이전트에게 요청 중...",
+    "ask_domain_expert": "📚 도메인 지식 조회 중...",
+    "validate": "✅ 사전조건 확인 중...",
+    "search_masters": "🔍 오피셜클럽 검색 중...",
+    "get_master_detail": "📋 오피셜클럽 상세 조회 중...",
+    "get_master_groups": "📋 마스터 그룹 조회 중...",
+    "get_series_list": "📋 시리즈 목록 조회 중...",
+    "get_product_page_list": "📦 상품 페이지 목록 조회 중...",
+    "get_product_page_detail": "📦 상품 페이지 상세 조회 중...",
+    "get_product_list_by_page": "📦 상품 옵션 조회 중...",
+    "get_community_settings": "🏠 커뮤니티 설정 조회 중...",
+    "update_product_display": "⚡ 상품 공개 상태 변경 중...",
+    "update_product_page_status": "⚡ 상품 페이지 상태 변경 중...",
+    "update_product_page": "⚡ 상품 페이지 수정 중...",
+    "update_main_product_setting": "⚡ 메인 상품 설정 변경 중...",
+    "navigate": "🔗 페이지 이동 안내 생성 중...",
+    "retrieve": "📚 도메인 지식 검색 중...",
+    "diagnose_visibility": "🔍 노출 체인 진단 중...",
+    "check_prerequisites": "✅ 사전조건 확인 중...",
+    "check_idempotency": "✅ 중복 실행 확인 중...",
+}
+
+
+class StreamingCallbackHandler:
+    """Tool 호출 시 SSE 이벤트를 큐에 넣는 callback handler."""
+
+    def __init__(self, event_queue: queue.Queue):
+        self.event_queue = event_queue
+        self.tool_count = 0
+
+    def __call__(self, **kwargs):
+        tool_use = kwargs.get("event", {}).get("contentBlockStart", {}).get("start", {}).get("toolUse")
+        if tool_use:
+            self.tool_count += 1
+            tool_name = tool_use["name"]
+            progress = TOOL_PROGRESS.get(tool_name, f"🔄 {tool_name} 처리 중...")
+            self.event_queue.put({"type": "progress", "message": progress, "tool": tool_name, "count": self.tool_count})
+
+
+def _extract_text(result) -> str:
+    """AgentResult에서 텍스트를 추출."""
+    if hasattr(result, 'message') and isinstance(result.message, dict):
+        content = result.message.get('content', [])
+        texts = [c['text'] for c in content if c.get('text')]
+        return '\n'.join(texts)
+    return str(result)
+
+
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
     """오케스트레이터를 호출하고 결과를 ChatResponse로 변환."""
     orchestrator = _get_orchestrator(session_id)
 
     print(f"📥 msg='{message[:50]}' session={session_id}")
     result = orchestrator(message)
-    response_text = str(result)
 
-    return ChatResponse(message=response_text)
+    return ChatResponse(message=_extract_text(result))
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -116,6 +168,57 @@ async def chat(req: ChatRequest):
         import traceback
         traceback.print_exc()
         return ChatResponse(message=f"오류 발생: {e}")
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """SSE 스트리밍 — 진행 상황을 실시간으로 보여줌."""
+    _inject_token(req.context)
+    session_id = req.session_id or _DEFAULT_SESSION
+    event_queue: queue.Queue = queue.Queue()
+
+    async def event_generator():
+        # 에이전트를 별도 스레드에서 실행
+        result_holder = {"result": None, "error": None}
+
+        def run_agent():
+            try:
+                orchestrator = _get_orchestrator(session_id)
+                result = orchestrator(req.message.strip())
+                result_holder["result"] = _extract_text(result)
+            except Exception as e:
+                result_holder["error"] = str(e)
+            finally:
+                event_queue.put({"type": "done"})
+
+        thread = threading.Thread(target=run_agent)
+        thread.start()
+
+        # 큐에서 이벤트를 읽어 SSE로 전송
+        while True:
+            try:
+                event = await asyncio.get_event_loop().run_in_executor(None, event_queue.get, True, 0.5)
+            except queue.Empty:
+                continue
+
+            if event["type"] == "done":
+                # 최종 응답 전송
+                if result_holder["error"]:
+                    final = {"message": f"오류 발생: {result_holder['error']}"}
+                else:
+                    final = {"message": result_holder["result"]}
+                yield f"event: message\ndata: {json.dumps(final, ensure_ascii=False)}\n\n"
+                break
+            elif event["type"] == "progress":
+                yield f"event: progress\ndata: {json.dumps({'message': event['message'], 'tool': event['tool']}, ensure_ascii=False)}\n\n"
+
+        thread.join(timeout=5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/reset")
@@ -225,6 +328,14 @@ function addMsg(text, cls) {
   return div;
 }
 
+const progressMsgs = [
+  '🤔 생각하는 중...',
+  '🔍 정보 조회 중...',
+  '📚 도메인 지식 검색 중...',
+  '✅ 검증 중...',
+  '📝 답변 작성 중...',
+];
+
 let sending = false;
 async function send() {
   if (sending) return;
@@ -234,7 +345,12 @@ async function send() {
   input.value = '';
   addMsg(text, 'user');
   sendBtn.disabled = true;
-  const loading = addMsg('생각 중', 'agent loading');
+  const loading = addMsg(progressMsgs[0], 'agent loading');
+  let step = 0;
+  const progressInterval = setInterval(() => {
+    step = (step + 1) % progressMsgs.length;
+    loading.innerHTML = progressMsgs[step];
+  }, 3000);
   try {
     const token = getToken();
     const body = { message: text };
@@ -245,9 +361,11 @@ async function send() {
       body: JSON.stringify(body)
     });
     const data = await res.json();
+    clearInterval(progressInterval);
     loading.remove();
     addMsg(data.message, 'agent');
   } catch (e) {
+    clearInterval(progressInterval);
     loading.remove();
     addMsg('오류가 발생했습니다: ' + e.message, 'system');
   }
