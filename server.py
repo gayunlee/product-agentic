@@ -244,6 +244,8 @@ def _extract_buttons(text: str) -> list[dict]:
 
 def _detect_mode(text: str) -> str:
     """응답 텍스트에서 현재 모드를 감지."""
+    if any(k in text for k in ['완료되었습니다', '완료했습니다', '처리 완료', '변경 완료', '활성화되었습니다']):
+        return 'done'
     if any(k in text for k in ['진단 결과', '노출 진단', '체크 항목', '실패 지점']):
         return 'diagnose'
     if any(k in text for k in ['이동하세요', '페이지로 이동', 'navigate']):
@@ -261,8 +263,12 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     result = orchestrator(message)
 
     text = _extract_text(result)
-    buttons = _extract_buttons(text)
     mode = _detect_mode(text)
+
+    # 완료 응답에는 action 버튼 제거 (navigate만 유지)
+    buttons = _extract_buttons(text)
+    if mode == 'done':
+        buttons = [b for b in buttons if b['type'] == 'navigate']
 
     return ChatResponse(message=text, buttons=buttons, mode=mode)
 
