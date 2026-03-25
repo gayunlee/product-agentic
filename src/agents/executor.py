@@ -33,6 +33,8 @@ from src.agents.validator import (
 
 EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트입니다.
 
+⚠️ 최우선 규칙: 작업이 끝나면 반드시 respond Tool을 호출하세요. 직접 텍스트로 응답하면 안 됩니다.
+
 ## 역할
 운영 매니저의 요청을 받아 조회, 진단, 상태 변경을 실행합니다.
 3가지 모드로 동작합니다:
@@ -201,6 +203,7 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         role_type: 유저 권한 (ALL, PART, NONE)
         permission_sections: 권한 섹션 목록 (PART일 때 사용)
     """
+    from src.agents.response import AgentResponse, render_response_json as _render
     import json as _json
 
     @strands_tool
@@ -208,21 +211,17 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         """구조화된 응답을 반환합니다. 작업 완료 시 반드시 이 Tool을 호출하세요.
 
         Args:
-            response_type: 응답 유형 — diagnose, confirm, complete, guide, info, select
-            summary: 유저에게 보여줄 요약 (1~2줄)
-            data: 응답 데이터 (JSON 문자열)
+            response_type: 응답 유형 — diagnose, confirm, complete, guide, info, select, slot_question, error, reject
+            summary: 유저에게 보여줄 요약 (1~2줄, 자연어)
+            data: 응답 데이터 (JSON 문자열). type별 필수 필드는 프롬프트 참조.
         """
         try:
             parsed = _json.loads(data) if isinstance(data, str) else data
         except _json.JSONDecodeError:
             parsed = {"raw": data}
 
-        return _json.dumps({
-            "__agent_response__": True,
-            "type": response_type,
-            "summary": summary,
-            "data": parsed,
-        }, ensure_ascii=False)
+        resp = AgentResponse(type=response_type, summary=summary, data=parsed)
+        return _render(resp)
 
     all_tools = [
         # 조회

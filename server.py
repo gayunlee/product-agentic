@@ -177,53 +177,46 @@ def _detect_mode(text: str) -> str:
     return 'idle'
 
 
-def _try_parse_agent_response(text: str):
-    """respond Tool의 구조화된 응답을 파싱."""
+def _try_parse_agent_response(text: str) -> dict | None:
+    """respond Tool의 구조화된 응답(__agent_response__)을 파싱."""
     import re
-    # Tool 결과에 __agent_response__ JSON이 포함되어 있는지 확인
-    match = re.search(r'\{[^{}]*"__agent_response__"\s*:\s*true[^{}]*\}', text, re.DOTALL)
-    if match:
+    # JSON 블록 검색 — __agent_response__: true 포함
+    for match in re.finditer(r'\{[^{}]*"__agent_response__"[^{}]*\}', text):
         try:
             data = json.loads(match.group())
             if data.get("__agent_response__"):
                 return data
         except json.JSONDecodeError:
-            pass
-
-    # 더 넓은 범위로 검색 (nested JSON)
-    for m in re.finditer(r'\{.*?"__agent_response__".*?\}', text, re.DOTALL):
+            continue
+    # nested JSON (buttons 배열 포함)
+    for match in re.finditer(r'\{.*?"__agent_response__"\s*:\s*true.*?\}(?=\s|$)', text, re.DOTALL):
         try:
-            data = json.loads(m.group())
+            data = json.loads(match.group())
             if data.get("__agent_response__"):
                 return data
         except json.JSONDecodeError:
             continue
-
     return None
 
 
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
     """오케스트레이터를 호출하고 결과를 ChatResponse로 변환."""
-    from src.agents.response import AgentResponse, render_response
-
     orchestrator = _get_orchestrator(session_id)
 
     print(f"📥 msg='{message[:50]}' session={session_id}")
     result = orchestrator(message)
     raw_text = _extract_text(result)
 
-    # 1. respond Tool의 구조화 응답이 있으면 템플릿 렌더링
+    # 1. respond Tool의 구조화 응답 → 이미 렌더링된 message/buttons/mode
     agent_resp = _try_parse_agent_response(raw_text)
     if agent_resp:
-        resp = AgentResponse(
-            type=agent_resp["type"],
-            summary=agent_resp["summary"],
-            data=agent_resp.get("data", {}),
+        return ChatResponse(
+            message=agent_resp.get("message", ""),
+            buttons=agent_resp.get("buttons", []),
+            mode=agent_resp.get("mode", "idle"),
         )
-        msg, buttons, mode = render_response(resp)
-        return ChatResponse(message=msg, buttons=buttons, mode=mode)
 
-    # 2. 폴백: 기존 방식 (json:buttons 파싱)
+    # 2. 폴백: json:buttons 파싱
     text, buttons = _extract_buttons(raw_text)
     mode = _detect_mode(text)
     return ChatResponse(message=text, buttons=buttons, mode=mode)

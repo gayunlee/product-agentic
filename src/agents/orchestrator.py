@@ -103,27 +103,6 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
         return str(result)
 
     @strands_tool
-    def render_response(agent_response_json: str) -> str:
-        """수행 에이전트의 구조화된 응답(__agent_response__)을 렌더링합니다.
-        executor 결과에 __agent_response__ JSON이 포함되어 있으면 반드시 이 Tool을 호출하세요.
-
-        Args:
-            agent_response_json: executor가 반환한 __agent_response__ JSON 문자열
-        """
-        import json as _json
-        from src.agents.response import AgentResponse, render_response as _render
-
-        try:
-            data = _json.loads(agent_response_json) if isinstance(agent_response_json, str) else agent_response_json
-            resp = AgentResponse(type=data["type"], summary=data["summary"], data=data.get("data", {}))
-            msg, buttons, mode = _render(resp)
-            # 버튼 정보를 JSON으로 포함하여 반환 (서버가 파싱)
-            result = msg + "\n\n```json:buttons\n" + _json.dumps(buttons, ensure_ascii=False) + "\n```"
-            return result
-        except Exception as e:
-            return f"렌더링 실패: {e}"
-
-    @strands_tool
     def ask_domain_expert(question: str) -> str:
         """도메인 지식 에이전트. 관리자센터 개념을 설명합니다.
         API 호출 없이 지식 기반으로 답변합니다.
@@ -141,6 +120,6 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
 
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
-        tools=[ask_executor, ask_domain_expert, render_response],
+        tools=[ask_executor, ask_domain_expert],
         system_prompt=ORCHESTRATOR_PROMPT,
     )
