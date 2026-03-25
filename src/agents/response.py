@@ -9,15 +9,46 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ExecutorOutput(BaseModel):
+    """수행 에이전트의 structured_output 스키마."""
+
+    response_type: str = Field(
+        description="응답 유형: diagnose, confirm, complete, guide, info, select, slot_question, error, reject"
+    )
+    summary: str = Field(
+        description="유저에게 보여줄 요약 (1~2줄, 자연어)"
+    )
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="응답 데이터. type별 필수 필드: "
+        "diagnose={checks,first_failure,fix_label,nav_url}, "
+        "confirm={target,action_label,change,edit_url}, "
+        "complete={target,action_done,confirm_url}, "
+        "guide={label,url,steps}, "
+        "info={title,items,fix_label?,nav_url?}, "
+        "select={question,items}, "
+        "slot_question={question,items?}, "
+        "error={error_type,guide}, "
+        "reject={reason}",
+    )
 
 
 @dataclass
 class AgentResponse:
-    """수행 에이전트가 respond Tool을 통해 반환하는 구조화된 응답."""
+    """렌더링에 사용되는 내부 응답 객체."""
 
-    type: str  # diagnose|confirm|complete|guide|info|select|slot_question|error|reject
-    summary: str  # LLM 생성 요약 (1~2줄)
+    type: str
+    summary: str
     data: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_executor_output(cls, output: ExecutorOutput) -> AgentResponse:
+        return cls(type=output.response_type, summary=output.summary, data=output.data)
 
 
 # ── 헤더 ──
@@ -43,13 +74,21 @@ def _render_checklist(data: dict) -> str:
     checks = data.get("checks", [])
     if not checks:
         return ""
-    first_fail = next((c for c in checks if not c["ok"]), None)
+    # ok/passed 키 호환
+    def _is_ok(c):
+        return c.get("ok", c.get("passed", False))
+    def _get_name(c):
+        return c.get("name", c.get("label", c.get("condition", "")))
+    def _get_value(c):
+        return c.get("value", c.get("actual", ""))
+
+    first_fail = next((c for c in checks if not _is_ok(c)), None)
     lines = ["| 항목 | 상태 |", "|------|------|"]
     for c in checks:
-        icon = "✅" if c["ok"] else "❌"
-        value = c.get("value", "")
+        icon = "✅" if _is_ok(c) else "❌"
+        value = _get_value(c)
         suffix = " ← 원인" if c is first_fail else ""
-        lines.append(f"| {c['name']} | {icon} {value}{suffix} |")
+        lines.append(f"| {_get_name(c)} | {icon} {value}{suffix} |")
     return "\n".join(lines)
 
 
@@ -134,7 +173,7 @@ def _btn_select(label: str, value: str) -> dict:
 
 BUTTON_PATTERNS = {
     "diagnose": lambda d: (
-        [_btn_action(d["fix_label"]), _btn_navigate("설정 관리", d["nav_url"])]
+        [_btn_action(d.get("fix_label", "해결하기")), _btn_navigate("설정 관리", d.get("nav_url", "/product/page/list"))]
         if d.get("first_failure")
         else [_btn_navigate("설정 확인", d.get("nav_url", "/product/page/list"))]
     ),

@@ -48,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from src.agents import create_orchestrator
+from src.agents import create_agent_system, AgentSystem
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
@@ -60,14 +60,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 오케스트레이터 관리
-_sessions: dict[str, object] = {}
+# 세션별 에이전트 시스템 관리
+_sessions: dict[str, AgentSystem] = {}
 _DEFAULT_SESSION = "default"
 
 
-def _get_orchestrator(session_id: str = _DEFAULT_SESSION):
+def _get_system(session_id: str = _DEFAULT_SESSION) -> AgentSystem:
     if session_id not in _sessions:
-        _sessions[session_id] = create_orchestrator(session_id=session_id)
+        _sessions[session_id] = create_agent_system()
     return _sessions[session_id]
 
 
@@ -200,26 +200,52 @@ def _try_parse_agent_response(text: str) -> dict | None:
 
 
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
-    """오케스트레이터를 호출하고 결과를 ChatResponse로 변환."""
-    orchestrator = _get_orchestrator(session_id)
+    """분류 → 에이전트 직접 호출 → 포맷팅 레이어. 오케스트레이터가 응답을 중계하지 않음."""
+    from src.agents.response import ExecutorOutput, AgentResponse, render_response
 
+    system = _get_system(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id}")
-    result = orchestrator(message)
-    raw_text = _extract_text(result)
 
-    # 1. respond Tool의 구조화 응답 → 이미 렌더링된 message/buttons/mode
-    agent_resp = _try_parse_agent_response(raw_text)
-    if agent_resp:
+    # 1. 분류 (LLM — 한 단어만 반환)
+    classify_result = system.classifier(message)
+    classification = _extract_text(classify_result).strip().upper()
+    print(f"📎 분류: {classification}")
+
+    # 2. 분류에 따라 에이전트 직접 호출
+
+    if "EXECUTOR" in classification:
+        # 수행 에이전트: Tool 호출 → structured_output → 포맷팅
+        system.executor(message)
+        try:
+            output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
+            resp = AgentResponse.from_executor_output(output)
+            msg, buttons, mode = render_response(resp)
+            return ChatResponse(message=msg, buttons=buttons, mode=mode)
+        except Exception as e:
+            print(f"⚠️ structured_output 실패: {e}")
+            # 폴백: 마지막 텍스트 응답
+            fallback = _extract_text(system.executor.messages[-1] if system.executor.messages else {})
+            return ChatResponse(message=fallback or str(e))
+
+    elif "DOMAIN" in classification:
+        # 도메인 에이전트: 직접 응답
+        result = system.domain(message)
+        return ChatResponse(message=_extract_text(result))
+
+    elif "REJECT" in classification:
+        # 범위 밖 거부
         return ChatResponse(
-            message=agent_resp.get("message", ""),
-            buttons=agent_resp.get("buttons", []),
-            mode=agent_resp.get("mode", "idle"),
+            message="죄송합니다, 상품 세팅 관련 요청만 도와드릴 수 있습니다.\n\n"
+                    "도움이 필요하시면 다음과 같이 요청해보세요:\n"
+                    "- 상품 페이지 조회/수정\n"
+                    "- 노출 문제 진단\n"
+                    "- 도메인 개념 질문",
+            mode="reject",
         )
 
-    # 2. 폴백: json:buttons 파싱
-    text, buttons = _extract_buttons(raw_text)
-    mode = _detect_mode(text)
-    return ChatResponse(message=text, buttons=buttons, mode=mode)
+    else:
+        # SELF — 오케스트레이터가 직접 답변 (인사, 맥락 등)
+        return ChatResponse(message=_extract_text(classify_result))
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -227,7 +253,8 @@ async def chat(req: ChatRequest):
     try:
         _inject_token(req.context)
         session_id = req.session_id or _DEFAULT_SESSION
-        return _handle_message(req.message.strip(), session_id, req.context)
+        result = _handle_message(req.message.strip(), session_id, req.context)
+        return result
     except Exception as e:
         import traceback
         traceback.print_exc()

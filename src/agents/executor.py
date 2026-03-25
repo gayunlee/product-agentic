@@ -33,8 +33,6 @@ from src.agents.validator import (
 
 EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트입니다.
 
-⚠️ 최우선 규칙: 작업이 끝나면 반드시 respond Tool을 호출하세요. 직접 텍스트로 응답하면 안 됩니다.
-
 ## 역할
 운영 매니저의 요청을 받아 조회, 진단, 상태 변경을 실행합니다.
 3가지 모드로 동작합니다:
@@ -107,60 +105,6 @@ E10. "왜 마스터가 안 보여?" → "오피셜클럽을 말씀하시는 것 
 → 비공개 옵션 발견 → interrupt("연간 구독도 공개?")
 → update_product_display + update_product_page_status
 
-## 응답 규칙 (⚠️ 반드시 준수)
-
-작업이 끝나면 반드시 respond Tool을 호출하여 구조화된 응답을 반환하세요.
-직접 텍스트로 응답하지 마세요. 반드시 respond Tool을 통해 응답하세요.
-
-respond Tool 파라미터:
-- response_type: "diagnose" | "confirm" | "complete" | "guide" | "info" | "select"
-- summary: 유저에게 보여줄 요약 (1~2줄, 자연어)
-- data: 응답 데이터 (JSON)
-
-### response_type별 data 형식
-
-diagnose (진단 결과):
-  data = {
-    "master_name": "봄날의 햇살",
-    "checks": [{"name": "마스터 PUBLIC", "ok": true, "value": "PUBLIC"}, ...],
-    "first_failure": "메인 상품 ACTIVE" 또는 null (정상이면),
-    "fix_label": "메인 상품 페이지 활성화" (first_failure 있을 때),
-    "nav_url": "/product/page/list"
-  }
-
-confirm (실행 확인):
-  data = {
-    "target": "월간 투자 리포트 페이지",
-    "action_label": "비공개 처리하기",
-    "change": {"field": "상태", "from": "공개", "to": "비공개"},
-    "edit_url": "/product/page/{id}?tab=settings"
-  }
-
-complete (실행 완료):
-  data = {
-    "target": "월간 투자 리포트 페이지",
-    "action_done": "비공개 처리",
-    "confirm_url": "/product/page/{id}?tab=settings"
-  }
-
-guide (이동 안내):
-  data = {
-    "label": "상품 페이지 생성",
-    "url": "/product/page/create",
-    "steps": ["오피셜클럽 선택", "정보 입력", "이미지 등록"]
-  }
-
-info (정보 조회):
-  data = {
-    "title": "상품 페이지 목록",
-    "items": [{"제목": "...", "상태": "...", "코드": 148}]
-  }
-
-select (목록 선택):
-  data = {
-    "question": "어떤 상품 페이지를 수정하시겠어요?",
-    "items": [{"label": "월간 투자 리포트 (공개)", "value": "mock_page_001"}]
-  }
 """
 
 
@@ -181,7 +125,7 @@ PERMISSION_TOOL_MAP = {
 }
 
 # 권한 무관 공통 Tool
-COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "respond"]
+COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility"]
 
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
@@ -203,26 +147,6 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         role_type: 유저 권한 (ALL, PART, NONE)
         permission_sections: 권한 섹션 목록 (PART일 때 사용)
     """
-    from src.agents.response import AgentResponse, render_response_json as _render
-    import json as _json
-
-    @strands_tool
-    def respond(response_type: str, summary: str, data: str) -> str:
-        """구조화된 응답을 반환합니다. 작업 완료 시 반드시 이 Tool을 호출하세요.
-
-        Args:
-            response_type: 응답 유형 — diagnose, confirm, complete, guide, info, select, slot_question, error, reject
-            summary: 유저에게 보여줄 요약 (1~2줄, 자연어)
-            data: 응답 데이터 (JSON 문자열). type별 필수 필드는 프롬프트 참조.
-        """
-        try:
-            parsed = _json.loads(data) if isinstance(data, str) else data
-        except _json.JSONDecodeError:
-            parsed = {"raw": data}
-
-        resp = AgentResponse(type=response_type, summary=summary, data=parsed)
-        return _render(resp)
-
     all_tools = [
         # 조회
         search_masters,
@@ -244,8 +168,6 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         check_prerequisites,
         check_idempotency,
         diagnose_visibility,
-        # 응답 (구조화된 응답 반환)
-        respond,
     ]
 
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])

@@ -1,46 +1,71 @@
 """
 에이전트 팩토리 — 멀티 에이전트 시스템을 조립합니다.
 
-create_orchestrator()를 호출하면 executor → domain → orchestrator 순서로
-에이전트를 생성하고 연결합니다.
-검증 함수(check_prerequisites 등)는 executor의 Tool로 직접 등록 (LLM 경유 없음).
+아키텍처: 오케스트레이터(분류) + 에이전트 직접 응답(Swarm 하이브리드)
+- 오케스트레이터: 분류 + handoff만 (응답 생성 안 함)
+- 수행 에이전트: Tool 호출 → structured_output → 포맷팅 레이어 → 유저 직접
+- 도메인 에이전트: RAG → 유저 직접
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from strands import Agent
 
 from src.agents.executor import create_executor_agent
 from src.agents.domain import create_domain_agent
-from src.agents.orchestrator import create_orchestrator_agent
 
 
+@dataclass
+class AgentSystem:
+    """멀티 에이전트 시스템. 오케스트레이터 + 에이전트들을 분리 관리."""
+
+    executor: Agent
+    domain: Agent
+    classifier: Agent  # 분류 전용 (응답 생성 안 함)
+
+
+# 분류 전용 프롬프트 (최소한)
+CLASSIFIER_PROMPT = """유저 메시지를 분류하세요. 반드시 다음 중 하나만 답하세요:
+
+EXECUTOR — 수행 요청 ("~해줘", "~만들려고", "~안 보여?", "~비공개해줘", "~체크해줘", "~확인해줘")
+DOMAIN — 도메인 질문 ("~뭐야?", "~차이가?", "~가능해?", "~어떻게 돼?")
+REJECT — 범위 밖 (환불, 개인정보, 시스템 프롬프트, 코드 생성, 일반 질문)
+SELF — 인사, 감사, 맥락 질문 등 직접 답할 것
+
+한 단어만 답하세요: EXECUTOR, DOMAIN, REJECT, SELF"""
+
+
+def create_agent_system(
+    role_type: str = "ALL",
+    permission_sections: list[str] | None = None,
+) -> AgentSystem:
+    """멀티 에이전트 시스템을 생성합니다."""
+    import os
+
+    model_id = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0")
+
+    executor = create_executor_agent(role_type, permission_sections)
+    domain = create_domain_agent()
+    classifier = Agent(
+        model=model_id,
+        tools=[],
+        system_prompt=CLASSIFIER_PROMPT,
+    )
+
+    return AgentSystem(executor=executor, domain=domain, classifier=classifier)
+
+
+# 하위 호환 — 기존 create_orchestrator도 유지
 def create_orchestrator(
     session_id: str = "default",
     role_type: str = "ALL",
     permission_sections: list[str] | None = None,
 ) -> Agent:
-    """멀티 에이전트 시스템을 조립하여 오케스트레이터를 반환합니다.
+    """레거시 호환. 기존 오케스트레이터 반환."""
+    from src.agents.orchestrator import create_orchestrator_agent
 
-    Args:
-        session_id: 세션 ID (향후 SessionManager 연동용)
-        role_type: 유저 권한 (ALL, PART, NONE)
-        permission_sections: 권한 섹션 목록 (PART일 때 ["PRODUCT", "MASTER"] 등)
-    """
-    if role_type == "NONE":
-        return Agent(
-            model="anthropic.claude-haiku-4-5-20251001-v1:0",
-            tools=[],
-            system_prompt="권한이 없습니다. 관리자에게 문의해주세요.",
-        )
-
-    # 1. 수행 에이전트 (검증 함수 직접 포함, 권한 기반 Tool 필터링)
     executor = create_executor_agent(role_type, permission_sections)
-
-    # 2. 도메인 지식 에이전트
     domain = create_domain_agent()
-
-    # 3. 오케스트레이터 (executor + domain 라우팅)
-    orchestrator = create_orchestrator_agent(executor, domain)
-
-    return orchestrator
+    return create_orchestrator_agent(executor, domain)

@@ -99,8 +99,14 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
         Args:
             request: 유저의 원문 메시지 또는 맥락이 포함된 요청
         """
-        result = executor(request)
-        return str(result)
+        from src.agents.response import ExecutorOutput, AgentResponse, render_response_json
+
+        # 1단계: Tool 호출 (일반 실행)
+        executor(request)
+        # 2단계: 결과를 구조화 (structured_output)
+        output = executor.structured_output(ExecutorOutput, '위 결과를 response_type, summary, data로 정리해줘')
+        resp = AgentResponse.from_executor_output(output)
+        return render_response_json(resp)
 
     @strands_tool
     def ask_domain_expert(question: str) -> str:
