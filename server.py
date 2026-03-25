@@ -141,11 +141,25 @@ class StreamingCallbackHandler:
 
 def _extract_text(result) -> str:
     """AgentResult에서 텍스트를 추출."""
+    # AgentResult.message가 dict인 경우
     if hasattr(result, 'message') and isinstance(result.message, dict):
         content = result.message.get('content', [])
-        texts = [c['text'] for c in content if c.get('text')]
-        return '\n'.join(texts)
-    return str(result)
+        texts = [c['text'] for c in content if isinstance(c, dict) and c.get('text')]
+        if texts:
+            return '\n'.join(texts)
+    # str(result)가 dict처럼 보이면 파싱
+    s = str(result)
+    if s.startswith("{'role'") or s.startswith('{"role"'):
+        try:
+            import ast
+            d = ast.literal_eval(s) if s.startswith("{'") else __import__('json').loads(s)
+            content = d.get('content', [])
+            texts = [c['text'] for c in content if isinstance(c, dict) and c.get('text')]
+            if texts:
+                return '\n'.join(texts)
+        except Exception:
+            pass
+    return s
 
 
 def _extract_buttons(text: str) -> tuple[str, list[dict]]:
@@ -244,8 +258,18 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
         )
 
     else:
-        # SELF — 오케스트레이터가 직접 답변 (인사, 맥락 등)
-        return ChatResponse(message=_extract_text(classify_result))
+        # SELF — 직접 답변 (인사, 맥락 등)
+        # classifier는 분류만 하므로 별도 응답 생성
+        return ChatResponse(
+            message="안녕하세요! 관리자센터 상품 세팅 AI 어시스턴트입니다.\n\n"
+                    "다음과 같은 작업을 도와드릴 수 있습니다:\n"
+                    "- 📊 상품/상품페이지 노출 문제 진단\n"
+                    "- ⚡ 상품 공개/비공개/히든 처리\n"
+                    "- 🔗 관리자센터 페이지 이동 안내\n"
+                    "- 📚 도메인 개념 설명\n\n"
+                    "무엇을 도와드릴까요?",
+            mode="idle",
+        )
 
 
 @app.post("/chat", response_model=ChatResponse)
