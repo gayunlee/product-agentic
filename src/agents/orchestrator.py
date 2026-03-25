@@ -67,49 +67,11 @@ O6. 하위 에이전트 응답을 가공하지 않고 그대로 전달.
 
 ## 중요: 응답 전달 규칙
 
-하위 에이전트의 응답을 유저에게 전달할 때:
-- 응답을 요약하거나 줄이지 마세요
-- "INACTIVE", "ACTIVE" 같은 상태값이 있으면 반드시 포함하세요
-- 하위 에이전트가 준 표/목록/진단 결과를 그대로 전달하세요
+O7. executor의 응답에 __agent_response__ JSON이 포함되어 있으면,
+    반드시 render_response Tool을 호출하여 렌더링한 결과를 유저에게 전달하세요.
+    직접 풀어쓰지 마세요.
+O8. domain_expert의 응답은 그대로 전달하세요.
 
-## 버튼 응답 규칙 (⚠️ 필수)
-
-응답 끝에 반드시 ```json:buttons 블록을 추가하세요. UI가 이 블록을 파싱하여 클릭 가능한 버튼으로 보여줍니다.
-
-버튼 타입:
-- action: 에이전트에 실행 요청 (variant: "primary")
-- navigate: 관리자센터 페이지 이동 (url 필수, variant: "secondary")
-- select: 목록에서 선택 (value 필수)
-
-핵심 규칙:
-- 이미 해당 상태면 action 버튼 생략 (ACTIVE인데 "활성화" X)
-- 완료 응답에는 navigate만 (action 없음)
-- 도메인 질문 응답에는 버튼 없음 (블록 생략)
-
-예시 — 진단 결과 (INACTIVE 발견):
-```json:buttons
-[{"type":"action","label":"메인 상품 페이지 활성화","variant":"primary"},{"type":"navigate","label":"메인 상품 페이지 관리","url":"/product/page/list","variant":"secondary"}]
-```
-
-예시 — 진단 결과 (이미 정상):
-```json:buttons
-[{"type":"navigate","label":"설정 확인","url":"/product/page/list","variant":"secondary"}]
-```
-
-예시 — 실행 완료:
-```json:buttons
-[{"type":"navigate","label":"결과 확인","url":"/product/page/list","variant":"secondary"}]
-```
-
-예시 — 페이지 이동 안내:
-```json:buttons
-[{"type":"navigate","label":"상품 페이지 생성","url":"/product/page/create","variant":"primary"}]
-```
-
-예시 — 선택 필요:
-```json:buttons
-[{"type":"select","label":"월간 투자 리포트 (공개)","value":"1"},{"type":"select","label":"단건 특강 (비공개)","value":"2"}]
-```
 """
 
 
@@ -141,6 +103,27 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
         return str(result)
 
     @strands_tool
+    def render_response(agent_response_json: str) -> str:
+        """수행 에이전트의 구조화된 응답(__agent_response__)을 렌더링합니다.
+        executor 결과에 __agent_response__ JSON이 포함되어 있으면 반드시 이 Tool을 호출하세요.
+
+        Args:
+            agent_response_json: executor가 반환한 __agent_response__ JSON 문자열
+        """
+        import json as _json
+        from src.agents.response import AgentResponse, render_response as _render
+
+        try:
+            data = _json.loads(agent_response_json) if isinstance(agent_response_json, str) else agent_response_json
+            resp = AgentResponse(type=data["type"], summary=data["summary"], data=data.get("data", {}))
+            msg, buttons, mode = _render(resp)
+            # 버튼 정보를 JSON으로 포함하여 반환 (서버가 파싱)
+            result = msg + "\n\n```json:buttons\n" + _json.dumps(buttons, ensure_ascii=False) + "\n```"
+            return result
+        except Exception as e:
+            return f"렌더링 실패: {e}"
+
+    @strands_tool
     def ask_domain_expert(question: str) -> str:
         """도메인 지식 에이전트. 관리자센터 개념을 설명합니다.
         API 호출 없이 지식 기반으로 답변합니다.
@@ -158,6 +141,6 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
 
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
-        tools=[ask_executor, ask_domain_expert],
+        tools=[ask_executor, ask_domain_expert, render_response],
         system_prompt=ORCHESTRATOR_PROMPT,
     )

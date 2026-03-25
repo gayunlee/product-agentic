@@ -105,66 +105,60 @@ E10. "왜 마스터가 안 보여?" → "오피셜클럽을 말씀하시는 것 
 → 비공개 옵션 발견 → interrupt("연간 구독도 공개?")
 → update_product_display + update_product_page_status
 
-## 버튼 응답 규칙 (⚠️ 반드시 준수)
+## 응답 규칙 (⚠️ 반드시 준수)
 
-응답 끝에 ```json:buttons 블록으로 버튼을 포함하세요.
-사이드패널 UI가 이 블록을 파싱하여 클릭 가능한 버튼으로 렌더링합니다.
+작업이 끝나면 반드시 respond Tool을 호출하여 구조화된 응답을 반환하세요.
+직접 텍스트로 응답하지 마세요. 반드시 respond Tool을 통해 응답하세요.
 
-### 버튼 타입
-- action: 에이전트에 실행 요청 (클릭 → "라벨 해줘" 메시지 전달)
-- navigate: 관리자센터 페이지 이동 (url 필수)
-- select: 목록에서 선택 (클릭 → 선택 항목 전달)
+respond Tool 파라미터:
+- response_type: "diagnose" | "confirm" | "complete" | "guide" | "info" | "select"
+- summary: 유저에게 보여줄 요약 (1~2줄, 자연어)
+- data: 응답 데이터 (JSON)
 
-### 핵심 규칙
-1. 이미 해당 상태면 action 버튼 생략 (ACTIVE인데 "활성화" 버튼 X, 이미 비공개인데 "비공개" 버튼 X)
-2. action + navigate 짝으로 제공 (직접 실행 or 직접 수정 선택지)
-3. 완료 응답에는 action 없이 navigate만 (결과 확인용)
-4. 선택이 필요할 때만 select (상품 페이지/옵션 여러 개)
-5. 도메인 질문 응답에는 버튼 없음
+### response_type별 data 형식
 
-### URL 매핑 (navigate용)
-- /product/page/create — 상품 페이지 생성
-- /product/page/{id}?tab=settings — 상품 페이지 수정
-- /product/page/{id}?tab=options — 상품 옵션 관리
-- /product/page/list — 메인 상품 페이지 관리
-- /official-club/{masterId} — 오피셜클럽 상세
-- /official-club/create — 오피셜클럽 생성
-- /board/setting — 게시판 설정
-- /donation — 응원하기 관리
-- /cs/letter — 편지글 관리
-- https://master.us-insight.com — 파트너센터 (외부)
+diagnose (진단 결과):
+  data = {
+    "master_name": "봄날의 햇살",
+    "checks": [{"name": "마스터 PUBLIC", "ok": true, "value": "PUBLIC"}, ...],
+    "first_failure": "메인 상품 ACTIVE" 또는 null (정상이면),
+    "fix_label": "메인 상품 페이지 활성화" (first_failure 있을 때),
+    "nav_url": "/product/page/list"
+  }
 
-### 예시
+confirm (실행 확인):
+  data = {
+    "target": "월간 투자 리포트 페이지",
+    "action_label": "비공개 처리하기",
+    "change": {"field": "상태", "from": "공개", "to": "비공개"},
+    "edit_url": "/product/page/{id}?tab=settings"
+  }
 
-진단: 메인 상품 INACTIVE 발견
-```json:buttons
-[{"type":"action","label":"메인 상품 페이지 활성화","variant":"primary"},{"type":"navigate","label":"메인 상품 페이지 관리","url":"/product/page/list","variant":"secondary"}]
-```
+complete (실행 완료):
+  data = {
+    "target": "월간 투자 리포트 페이지",
+    "action_done": "비공개 처리",
+    "confirm_url": "/product/page/{id}?tab=settings"
+  }
 
-진단: 이미 정상 노출 중
-```json:buttons
-[{"type":"navigate","label":"설정 확인","url":"/product/page/list","variant":"secondary"}]
-```
+guide (이동 안내):
+  data = {
+    "label": "상품 페이지 생성",
+    "url": "/product/page/create",
+    "steps": ["오피셜클럽 선택", "정보 입력", "이미지 등록"]
+  }
 
-실행 확인: 비공개 처리하시겠어요?
-```json:buttons
-[{"type":"action","label":"비공개 처리하기","variant":"primary"},{"type":"navigate","label":"직접 수정","url":"/product/page/{id}?tab=settings","variant":"secondary"}]
-```
+info (정보 조회):
+  data = {
+    "title": "상품 페이지 목록",
+    "items": [{"제목": "...", "상태": "...", "코드": 148}]
+  }
 
-실행 완료: 비공개 처리 완료
-```json:buttons
-[{"type":"navigate","label":"결과 확인","url":"/product/page/{id}?tab=settings","variant":"secondary"}]
-```
-
-가이드: 상품 페이지 생성 안내
-```json:buttons
-[{"type":"navigate","label":"상품 페이지 생성","url":"/product/page/create","variant":"primary"}]
-```
-
-선택: 상품 페이지 목록
-```json:buttons
-[{"type":"select","label":"월간 투자 리포트 (코드: 148, 공개)","value":"1"},{"type":"select","label":"단건 특강 (코드: 155, 비공개)","value":"2"}]
-```
+select (목록 선택):
+  data = {
+    "question": "어떤 상품 페이지를 수정하시겠어요?",
+    "items": [{"label": "월간 투자 리포트 (공개)", "value": "mock_page_001"}]
+  }
 """
 
 
@@ -185,7 +179,7 @@ PERMISSION_TOOL_MAP = {
 }
 
 # 권한 무관 공통 Tool
-COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility"]
+COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "respond"]
 
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
@@ -207,6 +201,29 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         role_type: 유저 권한 (ALL, PART, NONE)
         permission_sections: 권한 섹션 목록 (PART일 때 사용)
     """
+    import json as _json
+
+    @strands_tool
+    def respond(response_type: str, summary: str, data: str) -> str:
+        """구조화된 응답을 반환합니다. 작업 완료 시 반드시 이 Tool을 호출하세요.
+
+        Args:
+            response_type: 응답 유형 — diagnose, confirm, complete, guide, info, select
+            summary: 유저에게 보여줄 요약 (1~2줄)
+            data: 응답 데이터 (JSON 문자열)
+        """
+        try:
+            parsed = _json.loads(data) if isinstance(data, str) else data
+        except _json.JSONDecodeError:
+            parsed = {"raw": data}
+
+        return _json.dumps({
+            "__agent_response__": True,
+            "type": response_type,
+            "summary": summary,
+            "data": parsed,
+        }, ensure_ascii=False)
+
     all_tools = [
         # 조회
         search_masters,
@@ -228,6 +245,8 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         check_prerequisites,
         check_idempotency,
         diagnose_visibility,
+        # 응답 (구조화된 응답 반환)
+        respond,
     ]
 
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
