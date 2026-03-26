@@ -311,6 +311,64 @@ def diagnose_visibility(master_id: str) -> dict:
     }
 
 
+@tool
+def check_cascading_effects(action: str, context: dict) -> dict:
+    """비공개 처리 시 계단식 영향을 검증합니다.
+
+    상품페이지 비공개 시 → 마지막 공개 페이지인지 확인 → 메인 상품도 EXCLUDED 필요 경고
+    상품 비공개 시 → 마지막 공개 상품인지 확인 → 상품페이지도 비공개 권장 경고
+
+    Args:
+        action: 실행하려는 액션명 (update_product_page_status, update_product_display)
+        context: {master_id, product_page_id, product_id, target_status/is_display}
+
+    Returns:
+        {"has_warning": bool, "warning": str, "suggested_actions": [...]}
+    """
+    master_id = context.get("master_id", "")
+
+    # 상품페이지 비공개 시 → 나머지 공개 페이지 확인
+    if action == "update_product_page_status" and context.get("target_status") == "INACTIVE":
+        product_page_id = context.get("product_page_id", "")
+        if master_id:
+            pages = _api_get("/v1/product-group", {"masterId": master_id})
+            if isinstance(pages, list):
+                active_pages = [p for p in pages if p.get("status") == "ACTIVE" and p.get("id") != product_page_id]
+                if len(active_pages) == 0:
+                    return {
+                        "has_warning": True,
+                        "warning": "이 페이지가 마지막 공개 페이지입니다. 비공개 처리하면 모든 상품페이지가 비공개됩니다. "
+                                   "메인 상품페이지도 EXCLUDED 처리하지 않으면 구독 페이지에서 버튼 클릭 시 404가 발생합니다.",
+                        "suggested_actions": [
+                            {"label": "메인 상품페이지도 EXCLUDED 처리", "action": "update_main_product_setting",
+                             "params": {"master_id": master_id, "view_status": "EXCLUDED"}},
+                        ],
+                    }
+
+    # 상품 비공개 시 → 나머지 공개 상품 확인
+    if action == "update_product_display" and context.get("is_display") is False:
+        product_page_id = context.get("product_page_id", "")
+        product_id = context.get("product_id", "")
+        if product_page_id:
+            products = _api_get(f"/v1/product/group/{product_page_id}", {"publishStatus": "all"})
+            if isinstance(products, list):
+                displayed = [p for p in products
+                             if p.get("isDisplay", False)
+                             and str(p.get("productId", p.get("id", ""))) != str(product_id)]
+                if len(displayed) == 0:
+                    return {
+                        "has_warning": True,
+                        "warning": "이 상품이 마지막 공개 상품입니다. 비공개 처리하면 상품페이지에 상품이 0개가 됩니다. "
+                                   "상품페이지도 비공개 처리하는 것을 권장합니다.",
+                        "suggested_actions": [
+                            {"label": "상품페이지도 비공개 처리", "action": "update_product_page_status",
+                             "params": {"product_page_id": product_page_id, "status": "INACTIVE"}},
+                        ],
+                    }
+
+    return {"has_warning": False, "warning": "", "suggested_actions": []}
+
+
 # ── 검증 에이전트 생성 ──
 
 VALIDATOR_PROMPT = """당신은 상품 세팅 검증 에이전트입니다.

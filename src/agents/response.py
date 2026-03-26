@@ -93,15 +93,19 @@ def _render_checklist(data: dict) -> str:
 
 
 def _render_preview(data: dict) -> str:
-    """변경 전/후 미리보기."""
+    """변경 전/후 미리보기 + 계단식 경고."""
     target = data.get("target", "")
     change = data.get("change", {})
-    if not change:
-        return f"**대상**: {target}"
-    return (
-        f"**대상**: {target}\n"
-        f"**변경**: {change.get('field', '')} `{change.get('from', '')}` → `{change.get('to', '')}`"
-    )
+    parts = []
+    if target:
+        parts.append(f"**대상**: {target}")
+    if change:
+        parts.append(f"**변경**: {change.get('field', '')} `{change.get('from', '')}` → `{change.get('to', '')}`")
+    # 계단식 경고
+    warning = data.get("cascading_warning")
+    if warning:
+        parts.append(f"\n⚠️ {warning}")
+    return "\n".join(parts) if parts else f"**대상**: {target}"
 
 
 def _render_result(data: dict) -> str:
@@ -179,6 +183,7 @@ BUTTON_PATTERNS = {
     ),
     "confirm": lambda d: [
         _btn_action(d["action_label"]),
+        *[_btn_action(sa["label"]) for sa in d.get("suggested_actions", [])],
         _btn_navigate("직접 수정", d["edit_url"]),
     ],
     "complete": lambda d: [

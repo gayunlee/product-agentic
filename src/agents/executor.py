@@ -29,6 +29,7 @@ from src.agents.validator import (
     check_prerequisites,
     check_idempotency,
     diagnose_visibility,
+    check_cascading_effects,
 )
 
 EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트입니다.
@@ -60,7 +61,7 @@ API를 호출하여 상태를 변경합니다.
 
 E1. 슬롯 필링: 오피셜클럽 → 상품 페이지 → 상품 옵션 순서로 좁힌다.
 E2. 여러 개일 때 반드시 목록 제시 후 선택 받는다 (자동 선택 금지).
-E3. 쓰기 API 전에 반드시 check_prerequisites + check_idempotency Tool을 호출.
+E3. 쓰기 API 전에 반드시 check_prerequisites + check_idempotency + check_cascading_effects Tool을 호출.
 E4. 쓰기 API 전에 반드시 유저 확인 (interrupt).
 E5. 생성은 직접 하지 않는다 → navigate()로 이동 안내.
 E6. 시리즈 생성 = 파트너센터 안내 (관리자센터 아님).
@@ -125,7 +126,7 @@ PERMISSION_TOOL_MAP = {
 }
 
 # 권한 무관 공통 Tool
-COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility"]
+COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "check_cascading_effects"]
 
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
@@ -168,6 +169,7 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         check_prerequisites,
         check_idempotency,
         diagnose_visibility,
+        check_cascading_effects,
     ]
 
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
