@@ -60,8 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 시스템 관리
+# 세션별 에이전트 시스템 + 활성 에이전트 관리
 _sessions: dict[str, AgentSystem] = {}
+_active_agent: dict[str, str] = {}  # session_id → "executor" | "domain" | None
 _DEFAULT_SESSION = "default"
 
 
@@ -214,36 +215,51 @@ def _try_parse_agent_response(text: str) -> dict | None:
 
 
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
-    """분류 → 에이전트 직접 호출 → 포맷팅 레이어. 오케스트레이터가 응답을 중계하지 않음."""
+    """분류 → 에이전트 직접 호출 → 포맷팅 레이어. 대화 맥락 유지."""
     from src.agents.response import ExecutorOutput, AgentResponse, render_response
 
     system = _get_system(session_id)
-    print(f"📥 msg='{message[:50]}' session={session_id}")
+    active = _active_agent.get(session_id)
+    print(f"📥 msg='{message[:50]}' session={session_id} active={active}")
 
-    # 1. 분류 (LLM — 한 단어만 반환)
-    classify_result = system.classifier(message)
-    classification = _extract_text(classify_result).strip().upper()
-    print(f"📎 분류: {classification}")
+    # 0. 활성 에이전트가 있으면 classifier 안 거치고 직접 전달
+    if active == "executor":
+        classification = "EXECUTOR"
+        print(f"📎 활성 에이전트 유지: {classification}")
+    elif active == "domain":
+        classification = "DOMAIN"
+        print(f"📎 활성 에이전트 유지: {classification}")
+    else:
+        # 1. 분류 (LLM — 한 단어만 반환)
+        classify_result = system.classifier(message)
+        classification = _extract_text(classify_result).strip().upper()
+        print(f"📎 분류: {classification}")
 
     # 2. 분류에 따라 에이전트 직접 호출
 
     if "EXECUTOR" in classification:
         # 수행 에이전트: Tool 호출 → structured_output → 포맷팅
+        _active_agent[session_id] = "executor"
         system.executor(message)
         try:
             output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
             resp = AgentResponse.from_executor_output(output)
             msg, buttons, mode = render_response(resp)
+            # 완료/에러/거부면 활성 에이전트 해제
+            if mode in ("complete", "error", "reject"):
+                _active_agent.pop(session_id, None)
             return ChatResponse(message=msg, buttons=buttons, mode=mode)
         except Exception as e:
             print(f"⚠️ structured_output 실패: {e}")
-            # 폴백: 마지막 텍스트 응답
             fallback = _extract_text(system.executor.messages[-1] if system.executor.messages else {})
             return ChatResponse(message=fallback or str(e))
 
     elif "DOMAIN" in classification:
         # 도메인 에이전트: 직접 응답
+        _active_agent[session_id] = "domain"
         result = system.domain(message)
+        # 도메인 응답 후 활성 해제 (단발성)
+        _active_agent.pop(session_id, None)
         return ChatResponse(message=_extract_text(result))
 
     elif "REJECT" in classification:
@@ -338,8 +354,9 @@ async def chat_stream(req: ChatRequest):
 
 @app.post("/reset")
 async def reset():
-    global _sessions
+    global _sessions, _active_agent
     _sessions.clear()
+    _active_agent.clear()
     return {"status": "ok"}
 
 
