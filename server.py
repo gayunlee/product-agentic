@@ -243,10 +243,12 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
         system.executor(message)
         try:
             output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
+            print(f"📋 structured_output: type={output.response_type} data_keys={list(output.data.keys())}")
             resp = AgentResponse.from_executor_output(output)
             msg, buttons, mode = render_response(resp)
-            # 완료/에러/거부면 활성 에이전트 해제
-            if mode in ("complete", "error", "reject"):
+            print(f"📋 렌더링: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
+            # slot_question/select만 활성 유지, 나머지는 해제
+            if mode not in ("slot_question", "select"):
                 _active_agent.pop(session_id, None)
             return ChatResponse(message=msg, buttons=buttons, mode=mode)
         except Exception as e:
