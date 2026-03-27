@@ -20,6 +20,7 @@ from src.tools.admin_api import (
     get_product_list_by_page,
     get_community_settings,
     update_product_display,
+    batch_update_product_display,
     update_product_page_status,
     update_product_page,
     update_main_product_setting,
@@ -118,7 +119,7 @@ PERMISSION_TOOL_MAP = {
     "PRODUCT": [
         "get_product_page_list", "get_product_page_detail",
         "get_product_list_by_page",
-        "update_product_display", "update_product_page_status",
+        "update_product_display", "batch_update_product_display", "update_product_page_status",
         "update_product_page",
     ],
     "MASTER": [
@@ -163,6 +164,7 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         get_community_settings,
         # 변경
         update_product_display,
+        batch_update_product_display,
         update_product_page_status,
         update_product_page,
         update_main_product_setting,

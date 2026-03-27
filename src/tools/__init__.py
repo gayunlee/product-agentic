@@ -8,6 +8,7 @@ from .admin_api import (
     get_product_list_by_page,
     get_community_settings,
     update_product_display,
+    batch_update_product_display,
     update_product_page_status,
     update_product_page,
     update_main_product_setting,

@@ -337,6 +337,74 @@ def update_product_display(product_id: str, is_display: bool = True) -> dict:
 
 
 @tool
+def batch_update_product_display(product_page_id: str, is_display: bool = False) -> dict:
+    """상품 페이지의 모든 상품을 한번에 공개/비공개 처리합니다.
+
+    "전부 비공개해줘", "다 비공개", "모두 비공개" 요청 시 사용.
+    개별 상품을 하나씩 처리하고, 마지막 상품일 때 계단식 경고를 반환합니다.
+
+    Args:
+        product_page_id: 상품 페이지 ID
+        is_display: 노출 여부 (False=전부 비공개, True=전부 공개)
+    """
+    if MOCK_MODE:
+        return _get_mock("update_product_display")
+
+    with _client() as c:
+        # 1. 해당 페이지의 상품 목록 조회
+        products_resp = c.get(f"/v1/product/group/{product_page_id}", params={"publishStatus": "all"})
+        if products_resp.status_code >= 400:
+            return _safe_request(products_resp)
+
+        products = products_resp.json() if isinstance(products_resp.json(), list) else []
+        if not products:
+            return {"error": True, "message": "상품이 없습니다."}
+
+        # 2. 대상 상품 필터 (이미 원하는 상태인 건 제외)
+        targets = [
+            p for p in products
+            if p.get("isDisplay", False) != is_display
+        ]
+        if not targets:
+            return {
+                "message": f"모든 상품이 이미 {'공개' if is_display else '비공개'} 상태입니다.",
+                "changed": 0,
+            }
+
+        # 3. 전부 비공개 시 계단식 경고
+        if not is_display:
+            all_displayed = [p for p in products if p.get("isDisplay", False)]
+            if len(all_displayed) > 0 and len(all_displayed) == len(targets):
+                # 모든 공개 상품이 비공개 대상 → 페이지에 상품 0개
+                return {
+                    "warning": True,
+                    "message": f"⚠️ {len(targets)}개 상품을 모두 비공개하면 상품페이지에 상품이 0개가 됩니다. "
+                               "상품페이지도 비공개 처리하시겠어요?",
+                    "targets": [{"id": str(p.get("productId", p.get("id", ""))), "name": p.get("name", "")} for p in targets],
+                    "suggested_action": {
+                        "label": "상품 전부 비공개 + 페이지도 비공개",
+                        "action": "batch_and_page_inactive",
+                        "params": {"product_page_id": product_page_id},
+                    },
+                    "proceed_anyway_label": "상품만 전부 비공개 (페이지는 유지)",
+                }
+
+        # 4. 실행
+        results = []
+        for p in targets:
+            pid = str(p.get("productId", p.get("id", "")))
+            r = c.patch("/v1/product/display", json={"id": pid, "isDisplay": is_display})
+            results.append({"id": pid, "name": p.get("name", ""), "success": r.status_code < 400})
+
+        action = "공개" if is_display else "비공개"
+        return {
+            "message": f"{len(results)}개 상품 {action} 처리 완료",
+            "changed": len(results),
+            "results": results,
+        }
+
+
+@tool
 def update_product_page_status(product_page_id: str, status: str = "ACTIVE") -> dict:
     """상품 페이지의 공개 상태를 변경합니다.
 
