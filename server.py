@@ -60,9 +60,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 시스템 + 활성 에이전트 관리
+# 세션별 에이전트 시스템 + 활성 에이전트 + 대화 이력 관리
 _sessions: dict[str, AgentSystem] = {}
 _active_agent: dict[str, str] = {}  # session_id → "executor" | "domain" | None
+_chat_history: dict[str, list[dict]] = {}  # session_id → [{role, content}]
 _DEFAULT_SESSION = "default"
 
 
@@ -222,6 +223,11 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     active = _active_agent.get(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id} active={active}")
 
+    # 대화 이력에 유저 메시지 추가
+    if session_id not in _chat_history:
+        _chat_history[session_id] = []
+    _chat_history[session_id].append({"role": "user", "content": message})
+
     # 0. 활성 에이전트가 있으면 classifier 안 거치고 직접 전달
     if active == "executor":
         classification = "EXECUTOR"
@@ -230,8 +236,14 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
         classification = "DOMAIN"
         print(f"📎 활성 에이전트 유지: {classification}")
     else:
-        # 1. 분류 (LLM — 한 단어만 반환)
-        classify_result = system.classifier(message)
+        # 1. 분류 (LLM — 대화 맥락 포함하여 분류)
+        history = _chat_history.get(session_id, [])
+        context_prompt = message
+        if history:
+            recent = history[-4:]  # 최근 2턴 (유저+에이전트)
+            context_lines = [f"{'유저' if h['role']=='user' else '에이전트'}: {h['content'][:50]}" for h in recent]
+            context_prompt = f"[최근 대화]\n" + "\n".join(context_lines) + f"\n\n[현재 메시지]\n{message}"
+        classify_result = system.classifier(context_prompt)
         classification = _extract_text(classify_result).strip().upper()
         print(f"📎 분류: {classification}")
 
@@ -296,6 +308,10 @@ async def chat(req: ChatRequest):
         _inject_token(req.context)
         session_id = req.session_id or _DEFAULT_SESSION
         result = _handle_message(req.message.strip(), session_id, req.context)
+        # 에이전트 응답을 대화 이력에 저장
+        if session_id not in _chat_history:
+            _chat_history[session_id] = []
+        _chat_history[session_id].append({"role": "assistant", "content": result.message[:100]})
         return result
     except Exception as e:
         import traceback
@@ -356,9 +372,10 @@ async def chat_stream(req: ChatRequest):
 
 @app.post("/reset")
 async def reset():
-    global _sessions, _active_agent
+    global _sessions, _active_agent, _chat_history
     _sessions.clear()
     _active_agent.clear()
+    _chat_history.clear()
     print("🔄 세션 초기화 완료")
     return {"status": "ok"}
 
