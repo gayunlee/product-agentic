@@ -290,16 +290,45 @@ def get_community_settings(cms_id: str) -> dict:
 def update_product_display(product_id: str, is_display: bool = True) -> dict:
     """상품 옵션의 노출 상태를 변경합니다.
 
-    선행 조건: product_id 필수
-    주의: "상품"(옵션)과 "상품 페이지"는 다름. 이 Tool은 상품 옵션의 공개/비공개.
-    주의: 비공개로 변경하면 고객에게 즉시 안 보임. 반드시 유저 확인 후 실행.
+    비공개로 변경 시 자동으로 계단식 영향을 검증합니다.
+    마지막 공개 상품을 비공개하면 경고와 함께 페이지 비공개 제안을 반환합니다.
 
     Args:
         product_id: 상품 ID
         is_display: 노출 여부
-
-    예시: update_product_display("55", false)
     """
+    # 비공개 시 계단식 검증 (Tool 내부 강제)
+    if not is_display and not MOCK_MODE:
+        # 이 상품이 속한 페이지의 다른 공개 상품 확인
+        # product_id로 직접 페이지를 찾을 수 없으므로, 상품 상세에서 productGroupId 추출
+        with _client() as c:
+            product_detail = c.get(f"/v1/product/{product_id}")
+            if product_detail.status_code == 200:
+                product_data = product_detail.json()
+                page_id = product_data.get("productGroupId", "")
+                if page_id:
+                    products_resp = c.get(f"/v1/product/group/{page_id}", params={"publishStatus": "all"})
+                    if products_resp.status_code == 200:
+                        products = products_resp.json() if isinstance(products_resp.json(), list) else []
+                        displayed_others = [
+                            p for p in products
+                            if p.get("isDisplay", False)
+                            and str(p.get("productId", p.get("id", ""))) != str(product_id)
+                        ]
+                        if len(displayed_others) == 0:
+                            return {
+                                "warning": True,
+                                "message": "⚠️ 이 상품이 마지막 공개 상품입니다. "
+                                           "비공개 처리하면 상품페이지에 상품이 0개가 되어 빈 페이지가 표시됩니다. "
+                                           "상품페이지도 비공개 처리하시겠어요?",
+                                "suggested_action": {
+                                    "label": "상품페이지도 비공개 처리",
+                                    "action": "update_product_page_status",
+                                    "params": {"product_page_id": page_id, "status": "INACTIVE"},
+                                },
+                                "proceed_anyway_label": "상품만 비공개 (페이지는 유지)",
+                            }
+
     if MOCK_MODE:
         return _get_mock("update_product_display")
     with _client() as c:
@@ -311,16 +340,42 @@ def update_product_display(product_id: str, is_display: bool = True) -> dict:
 def update_product_page_status(product_page_id: str, status: str = "ACTIVE") -> dict:
     """상품 페이지의 공개 상태를 변경합니다.
 
-    선행 조건: product_page_id 필수 → validator.check_prerequisites 먼저
-    주의: INACTIVE로 변경하면 고객에게 즉시 안 보임. 반드시 유저 확인 후 실행.
-    멱등성: 이미 같은 상태면 validator.check_idempotency가 걸러줌.
+    INACTIVE로 변경 시 자동으로 계단식 영향을 검증합니다.
+    마지막 공개 페이지를 비공개하면 경고와 함께 메인 EXCLUDED 제안을 반환합니다.
 
     Args:
         product_page_id: 상품 페이지 ID
         status: 상태 (ACTIVE 또는 INACTIVE)
-
-    예시: update_product_page_status("148", "INACTIVE")
     """
+    # 비공개 시 계단식 검증 (Tool 내부 강제)
+    if status == "INACTIVE" and not MOCK_MODE:
+        # 이 페이지의 master_id 확인
+        with _client() as c:
+            detail = c.get(f"/v1/product-group/{product_page_id}")
+            if detail.status_code == 200:
+                page_data = detail.json()
+                master_id = page_data.get("masterId", "")
+                if master_id:
+                    # 같은 마스터의 다른 공개 페이지 확인
+                    pages_resp = c.get("/v1/product-group", params={"masterId": master_id})
+                    if pages_resp.status_code == 200:
+                        pages = pages_resp.json() if isinstance(pages_resp.json(), list) else []
+                        active_others = [p for p in pages if p.get("status") == "ACTIVE" and str(p.get("id")) != str(product_page_id)]
+                        if len(active_others) == 0:
+                            return {
+                                "warning": True,
+                                "message": "⚠️ 이 페이지가 마지막 공개 페이지입니다. "
+                                           "비공개 처리하면 모든 상품페이지가 비공개되고, "
+                                           "메인 상품페이지 버튼 클릭 시 404가 발생합니다. "
+                                           "메인 상품페이지도 EXCLUDED 처리하시겠어요?",
+                                "suggested_action": {
+                                    "label": "메인도 EXCLUDED 처리",
+                                    "action": "update_main_product_setting",
+                                    "params": {"master_id": master_id, "view_status": "EXCLUDED"},
+                                },
+                                "proceed_anyway_label": "비공개만 처리 (메인은 유지)",
+                            }
+
     if MOCK_MODE:
         return _get_mock("update_product_page_status")
     with _client() as c:
