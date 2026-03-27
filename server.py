@@ -38,6 +38,12 @@ provider.add_span_processor(SimpleSpanProcessor(exporter))
 trace.set_tracer_provider(provider)
 print("Langfuse OTEL tracing initialized")
 
+import os as _os
+if _os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes"):
+    print("⚠️  MOCK MODE — 실제 API 호출 없이 Mock 데이터 반환")
+else:
+    print("🔴 LIVE MODE — 실제 관리자센터 API 호출")
+
 import json
 import asyncio
 import queue
