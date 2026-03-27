@@ -89,6 +89,7 @@ class ChatResponse(BaseModel):
     message: str
     buttons: list[dict] = []
     mode: str = "idle"
+    mock_mode: bool = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
 
 
 def _inject_token(context: dict | None):
