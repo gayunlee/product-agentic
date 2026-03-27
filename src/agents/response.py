@@ -166,6 +166,9 @@ def _btn_action(label: str) -> dict:
 
 
 def _btn_navigate(label: str, url: str) -> dict:
+    # URL 검증 — /로 시작하거나 http로 시작해야 함
+    if not url.startswith("/") and not url.startswith("http"):
+        url = "/product/page/list"  # 잘못된 URL은 기본 페이지로
     return {"type": "navigate", "label": label, "url": url, "variant": "secondary"}
 
 
