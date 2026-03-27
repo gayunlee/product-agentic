@@ -359,6 +359,7 @@ async def reset():
     global _sessions, _active_agent
     _sessions.clear()
     _active_agent.clear()
+    print("🔄 세션 초기화 완료")
     return {"status": "ok"}
 
 
