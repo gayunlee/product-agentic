@@ -147,6 +147,28 @@ PERMISSION_TOOL_MAP = {
 # 권한 무관 공통 Tool
 COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "check_cascading_effects", "verify_settings"]
 
+# 작업 유형별 Tool (TTFT 최적화 — 필요한 Tool만 로드)
+TASK_TOOL_MAP = {
+    "diagnose": [
+        "diagnose_visibility", "get_community_settings", "navigate",
+    ],
+    "query": [
+        "search_masters", "get_master_detail", "get_product_page_list",
+        "get_product_page_detail", "get_product_list_by_page", "get_community_settings",
+        "navigate",
+    ],
+    "update": [
+        "search_masters", "get_product_page_list", "get_product_list_by_page",
+        "update_product_display", "batch_update_product_display",
+        "update_product_page_status", "update_product_page", "update_main_product_setting",
+        "check_prerequisites", "check_idempotency", "check_cascading_effects",
+        "navigate",
+    ],
+    "guide": [
+        "search_masters", "get_series_list", "get_product_page_list", "navigate",
+    ],
+}
+
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
     """권한에 따라 Tool 목록을 필터링합니다."""
@@ -160,12 +182,17 @@ def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sect
     return [t for t in all_tools if getattr(t, '__name__', getattr(t, 'name', '')) in allowed_names]
 
 
-def create_executor_agent(role_type: str = "ALL", permission_sections: list[str] | None = None) -> Agent:
-    """수행 에이전트를 생성합니다. 검증 함수를 직접 Tool로 등록 (LLM 경유 없음).
+def create_executor_agent(
+    role_type: str = "ALL",
+    permission_sections: list[str] | None = None,
+    task_type: str | None = None,
+) -> Agent:
+    """수행 에이전트를 생성합니다.
 
     Args:
         role_type: 유저 권한 (ALL, PART, NONE)
         permission_sections: 권한 섹션 목록 (PART일 때 사용)
+        task_type: 작업 유형 (diagnose, query, update, guide). None이면 전체 Tool 로드.
     """
     all_tools = [
         # 조회
@@ -194,7 +221,13 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         verify_settings,
     ]
 
+    # 1. 권한 필터링
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
+
+    # 2. 작업 유형 필터링 (TTFT 최적화)
+    if task_type and task_type in TASK_TOOL_MAP:
+        allowed_task_tools = set(TASK_TOOL_MAP[task_type])
+        tools = [t for t in tools if getattr(t, '__name__', getattr(t, 'name', '')) in allowed_task_tools]
 
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),

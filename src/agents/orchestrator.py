@@ -24,10 +24,13 @@ O1. 분류만 한다. 직접 답변하지 않는다.
 O2. 도메인 질문 → domain_expert 호출.
     "~뭐야?", "~차이가?", "~가능해?", "~어떻게 돼?" 패턴.
 
-O3. 수행 요청 → executor 호출.
-    "~해줘", "~만들려고", "~안 보여?", "~비공개해줘", "~체크해줘" 패턴.
+O3. 수행 요청 → 작업 유형에 맞는 Tool 호출:
+    - "왜 안 보여?", "진단해줘" → diagnose
+    - "상품옵션 뭐있어?", "목록 보여줘" → query
+    - "비공개해줘", "공개해줘", "히든 처리해줘" → execute
+    - "새로 만들려고", "어디서 설정해?" → guide
 
-O4. 복합(조회+개념) → executor 먼저, 결과 보고 도메인 보충.
+O4. 복합(조회+개념) → query 먼저, 결과 보고 도메인 보충.
 
 O5. 대명사("그거", "이전 거") → 대화 히스토리에서 대상 추론 후 executor에 전달.
 
@@ -112,31 +115,59 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         memory_context: AgentCore Memory에서 가져온 맥락 문자열 (시스템 프롬프트에 주입)
     """
 
-    @strands_tool
-    def ask_executor(request: str) -> str:
-        """수행 에이전트. 실제 액션을 실행합니다.
-        - 조회: 오피셜클럽, 상품 페이지, 상품 옵션 등 조회
-        - 진단: 상품/게시판/응원하기가 왜 안 보이는지 원인 분석
-        - 가이드: 관리자센터 페이지 이동 안내 (생성 등)
-        - 실행: 상품/상품 페이지 공개/비공개 변경 등
-
-        사용 시나리오:
-        - '~해줘', '~만들려고' → 가이드/실행
-        - '~안 보여?', '왜 ~?' → 진단
-        - '~비공개해줘', '~공개해줘' → 실행
-
-        Args:
-            request: 유저의 원문 메시지 또는 맥락이 포함된 요청
-        """
-        # executor 호출 → 응답 텍스트 그대로 반환 (structured_output 제거)
-        result = executor(request)
-        # executor의 마지막 메시지에서 텍스트 추출
+    def _extract_result(result) -> str:
+        """Agent 결과에서 텍스트 추출."""
         if hasattr(result, 'message') and isinstance(result.message, dict):
             content = result.message.get('content', [])
             texts = [c['text'] for c in content if isinstance(c, dict) and c.get('text')]
             if texts:
                 return '\n'.join(texts)
         return str(result)
+
+    @strands_tool
+    def diagnose(request: str) -> str:
+        """노출 진단. "왜 안 보여?", "노출이 안 돼", "진단해줘" 요청에 사용.
+        오피셜클럽 이름을 포함하여 요청하세요.
+
+        Args:
+            request: 진단 요청 (예: "조조형우 노출 진단해줘")
+        """
+        from src.agents.executor import create_executor_agent
+        diag_executor = create_executor_agent(task_type="diagnose")
+        return _extract_result(diag_executor(request))
+
+    @strands_tool
+    def query(request: str) -> str:
+        """조회. 오피셜클럽, 상품 페이지, 상품 옵션 목록/상세 조회에 사용.
+
+        Args:
+            request: 조회 요청 (예: "홍춘욱 상품옵션 뭐있어?")
+        """
+        from src.agents.executor import create_executor_agent
+        query_executor = create_executor_agent(task_type="query")
+        return _extract_result(query_executor(request))
+
+    @strands_tool
+    def execute(request: str) -> str:
+        """실행. 상품/상품페이지 공개/비공개/히든 변경, 메인 상품페이지 설정 등에 사용.
+
+        Args:
+            request: 실행 요청 (예: "조조형우 상품페이지 비공개해줘")
+        """
+        from src.agents.executor import create_executor_agent
+        exec_executor = create_executor_agent(task_type="update")
+        return _extract_result(exec_executor(request))
+
+    @strands_tool
+    def guide(request: str) -> str:
+        """가이드. 페이지 생성, 관리자센터 이동 안내에 사용.
+
+        Args:
+            request: 안내 요청 (예: "상품페이지 새로 만들려고")
+        """
+        from src.agents.executor import create_executor_agent
+        guide_executor = create_executor_agent(task_type="guide")
+        return _extract_result(guide_executor(request))
 
     @strands_tool
     def ask_domain_expert(question: str) -> str:
@@ -160,6 +191,6 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
 
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
-        tools=[ask_executor, ask_domain_expert],
+        tools=[diagnose, query, execute, guide, ask_domain_expert],
         system_prompt=prompt,
     )
