@@ -240,6 +240,42 @@ def diagnose_visibility(master_id: str) -> dict:
         "actual": main_product.get("productGroupViewStatus", "UNKNOWN") if isinstance(main_product, dict) else "조회 실패",
     })
 
+    # 2-1. 웹링크 정합성 체크 (메인 상품 ACTIVE일 때만)
+    weblink_warnings = []
+    if main_active and isinstance(main_product, dict):
+        web_link = main_product.get("productGroupWebLink", "")
+        web_link_status = main_product.get("isProductGroupWebLinkStatus", "INACTIVE")
+
+        if web_link_status == "ACTIVE" and web_link:
+            # 웹링크에서 상품코드 추출
+            import re
+            code_match = re.search(r"/products/group/(\d+)", web_link)
+            if code_match:
+                weblink_code = int(code_match.group(1))
+                # 웹링크 타겟 상품페이지 상태 확인 (아래 페이지 조회에서 검증)
+                checks.append({
+                    "condition": "weblink_set",
+                    "label": "웹링크 설정",
+                    "passed": True,
+                    "actual": f"코드 {weblink_code}",
+                    "_weblink_code": weblink_code,
+                })
+            else:
+                checks.append({
+                    "condition": "weblink_set",
+                    "label": "웹링크 설정",
+                    "passed": False,
+                    "actual": f"잘못된 형식: {web_link[:50]}",
+                })
+                weblink_warnings.append("웹링크 URL 형식이 올바르지 않습니다.")
+        elif web_link_status != "ACTIVE":
+            checks.append({
+                "condition": "weblink_set",
+                "label": "웹링크 설정",
+                "passed": False,
+                "actual": "미설정 (productGroupCode로 fallback)",
+            })
+
     # 3. 상품 페이지들 확인
     pages = _api_get("/v1/product-group", {"masterId": master_id})
     active_pages = []
@@ -288,6 +324,74 @@ def diagnose_visibility(master_id: str) -> dict:
         "pages": active_pages,
     })
 
+    # 4. 웹링크 타겟 상품페이지 정합성 검증
+    weblink_check = next((c for c in checks if c.get("condition") == "weblink_set" and c.get("_weblink_code")), None)
+    if weblink_check and isinstance(pages, list):
+        weblink_code = weblink_check["_weblink_code"]
+        target_page = next((p for p in active_pages if p.get("page_id")), None)
+
+        # 코드로 매칭 (active_pages에는 상세 정보가 없으므로 전체 페이지에서 찾기)
+        all_page_details = {}
+        for page in pages:
+            page_id = page.get("id")
+            if page_id:
+                detail = _api_get(f"/v1/product-group/{page_id}")
+                if isinstance(detail, dict):
+                    all_page_details[detail.get("code")] = detail
+
+        target = all_page_details.get(weblink_code)
+
+        if target is None:
+            weblink_warnings.append(f"웹링크가 존재하지 않는 상품페이지(코드 {weblink_code})를 가리킵니다.")
+            checks.append({
+                "condition": "weblink_target_valid",
+                "label": "웹링크 타겟 유효",
+                "passed": False,
+                "actual": f"코드 {weblink_code} 없음",
+            })
+        else:
+            target_status = target.get("status", "UNKNOWN")
+            target_hidden = target.get("isHidden", False)
+            target_always = target.get("isAlwaysPublic", True)
+
+            if target_status != "ACTIVE":
+                weblink_warnings.append(f"웹링크가 비공개(INACTIVE) 상품페이지(코드 {weblink_code})를 가리킵니다. 버튼 클릭 시 에러가 발생합니다.")
+                checks.append({
+                    "condition": "weblink_target_valid",
+                    "label": "웹링크 타겟 접근 가능",
+                    "passed": False,
+                    "actual": f"코드 {weblink_code} INACTIVE",
+                })
+            elif target_hidden and not target_always:
+                weblink_warnings.append(f"웹링크가 히든+날짜지정 상품페이지(코드 {weblink_code})를 가리킵니다. 공개기간 만료 시 404가 발생합니다.")
+                checks.append({
+                    "condition": "weblink_target_valid",
+                    "label": "웹링크 타겟 안정성",
+                    "passed": False,
+                    "actual": f"코드 {weblink_code} 히든+날짜지정 (기간 만료 위험)",
+                })
+            elif not target_hidden and not target_always:
+                # 비히든 날짜지정 — 다른 비히든 페이지가 우선될 수 있음
+                other_non_hidden = [p for p in all_page_details.values()
+                                    if p.get("code") != weblink_code
+                                    and p.get("status") == "ACTIVE"
+                                    and not p.get("isHidden", False)]
+                if other_non_hidden:
+                    weblink_warnings.append(f"웹링크가 날짜지정 상품페이지(코드 {weblink_code})를 가리키지만, 다른 공개 페이지가 우선 노출될 수 있습니다.")
+                checks.append({
+                    "condition": "weblink_target_valid",
+                    "label": "웹링크 타겟 접근 가능",
+                    "passed": True,
+                    "actual": f"코드 {weblink_code} ACTIVE",
+                })
+            else:
+                checks.append({
+                    "condition": "weblink_target_valid",
+                    "label": "웹링크 타겟 접근 가능",
+                    "passed": True,
+                    "actual": f"코드 {weblink_code} 정상",
+                })
+
     # 첫 번째 실패 지점 찾기
     first_failure = None
     recommendation = None
@@ -307,6 +411,7 @@ def diagnose_visibility(master_id: str) -> dict:
         "checks": checks,
         "first_failure": first_failure,
         "recommendation": recommendation,
+        "weblink_warnings": weblink_warnings if weblink_warnings else None,
         "master_name": master.get("name", "") if isinstance(master, dict) else "",
     }
 
