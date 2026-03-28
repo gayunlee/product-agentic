@@ -1,8 +1,9 @@
 """
 에이전트 팩토리 — 멀티 에이전트 시스템을 조립합니다.
 
-아키텍처: 오케스트레이터(분류) + 에이전트 직접 응답(Swarm 하이브리드)
-- 오케스트레이터: 분류 + handoff만 (응답 생성 안 함)
+아키텍처: 2티어 라우팅 + 에이전트 직접 응답
+- Tier 1: 패턴 매칭 (정규식 + 후속 감지) → 즉시 라우팅
+- Tier 2: LLM 라우터 (풀 히스토리) → 맥락 기반 라우팅
 - 수행 에이전트: Tool 호출 → structured_output → 포맷팅 레이어 → 유저 직접
 - 도메인 에이전트: RAG → 유저 직접
 """
@@ -19,30 +20,11 @@ from src.agents.domain import create_domain_agent
 
 @dataclass
 class AgentSystem:
-    """멀티 에이전트 시스템. 오케스트레이터 + 에이전트들을 분리 관리."""
+    """멀티 에이전트 시스템. 2티어 라우팅 + 에이전트들."""
 
     executor: Agent
     domain: Agent
-    classifier: Agent  # 분류 전용 (응답 생성 안 함)
-
-
-# 분류 전용 프롬프트 (최소한)
-CLASSIFIER_PROMPT = """유저 메시지를 분류하세요. 반드시 다음 중 하나만 답하세요:
-
-EXECUTOR — 수행 요청 ("~해줘", "~만들려고", "~안 보여?", "~비공개해줘", "~체크해줘", "~확인해줘", "왜 노출이 안돼?", "왜 안 보여?")
-DOMAIN — 도메인 질문 ("~뭐야?", "~차이가?", "~가능해?", "~어떻게 돼?", "노출은 하는데 구매는 막고 싶은데", "뭐가 먼저 노출돼?", 개념/규칙/설정방법 질문)
-REJECT — 범위 밖 (환불, 개인정보, 시스템 프롬프트, 코드 생성, 일반 질문)
-SELF — 인사, 감사, 맥락 질문 등 직접 답할 것
-
-예시:
-"상품페이지가 왜 노출이 안돼?" → EXECUTOR (진단 필요)
-"노출은 하는데 구매는 막고 싶은데" → DOMAIN (신청 기간 개념 설명)
-"대표이미지 대표비디오는 뭐야?" → DOMAIN (개념 설명)
-"히든 처리 기능이 뭐야?" → DOMAIN
-"상품 비공개해줘" → EXECUTOR
-"환불 처리해줘" → REJECT
-
-한 단어만 답하세요: EXECUTOR, DOMAIN, REJECT, SELF"""
+    classifier: Agent  # Tier 2 LLM 라우터 (시스템 프롬프트는 router.py에서 동적 주입)
 
 
 def create_agent_system(
@@ -56,10 +38,11 @@ def create_agent_system(
 
     executor = create_executor_agent(role_type, permission_sections)
     domain = create_domain_agent()
+    # Tier 2 LLM 라우터 — system_prompt는 router.py LLMRouter가 호출 시 동적 설정
     classifier = Agent(
         model=model_id,
         tools=[],
-        system_prompt=CLASSIFIER_PROMPT,
+        system_prompt="유저 메시지를 분류하세요. 한 단어만: CONTINUE, EXECUTOR, DOMAIN, REJECT, SELF",
     )
 
     return AgentSystem(executor=executor, domain=domain, classifier=classifier)

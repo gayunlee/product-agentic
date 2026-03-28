@@ -14,3 +14,4 @@ from .admin_api import (
     update_main_product_setting,
     navigate,
 )
+from .verify import verify_settings

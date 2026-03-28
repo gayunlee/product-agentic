@@ -180,20 +180,20 @@ def _btn_select(label: str, value: str) -> dict:
 
 BUTTON_PATTERNS = {
     "diagnose": lambda d: (
-        [_btn_action(d.get("fix_label", "해결하기")), _btn_navigate("설정 관리", d.get("nav_url", "/product/page/list"))]
+        [_btn_action("해결하기"), _btn_navigate("설정 관리", d.get("nav_url", "/product/page/list"))]
         if d.get("first_failure")
         else [_btn_navigate("설정 확인", d.get("nav_url", "/product/page/list"))]
     ),
     "confirm": lambda d: [
-        _btn_action(d["action_label"]),
-        *[_btn_action(sa["label"]) for sa in d.get("suggested_actions", [])],
-        _btn_navigate("직접 수정", d["edit_url"]),
+        _btn_action(d.get("action_label", "실행하기")),
+        *[_btn_action(sa.get("label", "추가 처리")) for sa in d.get("suggested_actions", [])],
+        _btn_navigate("직접 수정", d.get("edit_url", "/product/page/list")),
     ],
     "complete": lambda d: [
-        _btn_navigate("결과 확인", d["confirm_url"]),
+        _btn_navigate("결과 확인", d.get("confirm_url", "/product/page/list")),
     ],
     "guide": lambda d: [
-        _btn_navigate(d["label"], d["url"]),
+        _btn_navigate(d.get("label", "이동하기"), d.get("url", "/product/page/list")),
     ],
     "info": lambda d: (
         [_btn_action(d["fix_label"]), _btn_navigate("설정 관리", d["nav_url"])]

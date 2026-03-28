@@ -477,26 +477,32 @@ def update_main_product_setting(
     master_id: str,
     view_status: str = "ACTIVE",
     product_group_type: str = "US_PLUS",
+    web_link: str = "",
 ) -> dict:
     """메인 상품 페이지 설정을 변경합니다. 이 설정이 ACTIVE여야 고객에게 상품이 노출됩니다.
 
     선행 조건: master_id (cmsId) 필수
     주의: 2레벨 노출 — 마스터 공개(PUBLIC) + 이 설정(ACTIVE) 둘 다 충족해야 고객에게 보임.
     주의: 반드시 유저 확인 후 실행.
+    주의: web_link를 설정하면 isProductGroupWebLinkStatus도 ACTIVE로 설정됩니다.
 
     Args:
         master_id: 마스터 cmsId (예: "35")
         view_status: 노출 상태 (ACTIVE, INACTIVE, EXCLUDED)
         product_group_type: 상품 그룹 타입 (US_PLUS 또는 US_CAMPUS)
+        web_link: 구독 페이지 버튼 클릭 시 이동할 웹 링크 (예: "https://dev.us-insight.com/products/group/148")
     """
     if MOCK_MODE:
         return _get_mock("update_main_product_setting")
+    has_web_link = bool(web_link)
     body = {
         "productGroupType": product_group_type,
         "productGroupViewStatus": view_status,
-        "isProductGroupWebLinkStatus": "INACTIVE",
+        "isProductGroupWebLinkStatus": "ACTIVE" if has_web_link else "INACTIVE",
         "isProductGroupAppLinkStatus": "INACTIVE",
     }
+    if has_web_link:
+        body["productGroupWebLink"] = web_link
     with _client() as c:
         r = c.patch(f"/v1/masters/{master_id}/main-product-group", json=body)
         return _safe_request(r)

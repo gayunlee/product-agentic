@@ -32,6 +32,7 @@ from src.agents.validator import (
     diagnose_visibility,
     check_cascading_effects,
 )
+from src.tools.verify import verify_settings
 
 EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트입니다.
 
@@ -76,6 +77,18 @@ E10. "왜 마스터가 안 보여?" → "오피셜클럽을 말씀하시는 것 
 E12. "상품페이지 안 보이게" 요청 시 의도 확인 필수:
     - 구독 페이지에서 아예 안 보이게 → 메인 상품페이지 EXCLUDED
     - 특정 상품페이지만 비공개 → 해당 페이지 INACTIVE
+E13. 슬롯 필링 효율: 불필요한 확인 질문 금지.
+    - "어떤 오피셜클럽인가요?" (O) vs "이름으로 검색하시겠어요, ID로 검색하시겠어요?" (X)
+    - search_masters가 이름/ID 모두 처리 가능하므로 검색 방법을 묻지 않는다.
+    - 이미 확인된 정보는 다시 묻지 않는다.
+E14. 세팅 검증: 세팅 완료 후 유저가 검증을 요청하면 verify_settings Tool을 호출합니다.
+    - context: admin API로 수집한 현재 마스터/상품페이지/상품 데이터
+    - checks: 확인해야 할 항목 목록 (tool, args, expected)
+    - 사용 가능한 check tool: check_subscribe_page, check_product_page, check_direct_url_access, check_club_page
+    - 결과 해석:
+      - summary.passed == summary.total → "검증 완료, 모든 항목 정상"으로 리포트
+      - summary.failed > 0 → mismatches와 context를 분석하여 원인을 추론하고 해결 방안 제시
+      - summary.errors > 0 → 네트워크/타임아웃 문제일 수 있으니 재시도 고려
 
 ## 중요한 ID 규칙
 - search_masters 결과의 cmsId를 masterId로 사용 (MongoDB ObjectId 아님)
@@ -130,7 +143,7 @@ PERMISSION_TOOL_MAP = {
 }
 
 # 권한 무관 공통 Tool
-COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "check_cascading_effects"]
+COMMON_TOOLS = ["navigate", "check_prerequisites", "check_idempotency", "diagnose_visibility", "check_cascading_effects", "verify_settings"]
 
 
 def _filter_tools_by_permission(all_tools: list, role_type: str, permission_sections: list[str]) -> list:
@@ -175,6 +188,8 @@ def create_executor_agent(role_type: str = "ALL", permission_sections: list[str]
         check_idempotency,
         diagnose_visibility,
         check_cascading_effects,
+        # 세팅 결과 검증 (QA 에이전트 연동)
+        verify_settings,
     ]
 
     tools = _filter_tools_by_permission(all_tools, role_type, permission_sections or [])
