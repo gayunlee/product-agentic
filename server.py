@@ -80,8 +80,16 @@ def _get_memory(session_id: str = _DEFAULT_SESSION) -> AgentMemory | None:
 
 
 def _get_system(session_id: str = _DEFAULT_SESSION, memory_context: str = "") -> AgentSystem:
-    # 매번 새로 생성 — memory_context가 달라지므로
-    _sessions[session_id] = create_agent_system(memory_context=memory_context)
+    if session_id not in _sessions:
+        _sessions[session_id] = create_agent_system(memory_context=memory_context)
+    else:
+        # 기존 시스템 유지 (Agent 대화 히스토리 보존), memory_context만 갱신
+        system = _sessions[session_id]
+        if memory_context:
+            from src.agents.orchestrator import ORCHESTRATOR_PROMPT
+            system.orchestrator.system_prompt = ORCHESTRATOR_PROMPT
+            if memory_context:
+                system.orchestrator.system_prompt += f"\n## 관련 이력 (Memory)\n{memory_context}\n"
     return _sessions[session_id]
 
 
