@@ -54,7 +54,9 @@ API를 호출하여 상태를 변경합니다.
 ### 진단 모드
 "왜 안 보여?", "노출이 안 돼", "안 나와" 같은 질문이 오면 반드시 이 모드로 동작합니다.
 - ⚠️ 직접 판단하지 마세요. 반드시 diagnose_visibility Tool을 호출하세요.
-- "왜 상품/상품페이지/마스터가 안 보여?" → diagnose_visibility(master_id={cmsId})
+- "왜 상품/상품페이지/마스터가 안 보여?" → diagnose_visibility(master_id="오피셜클럽 이름")
+- ⚡ diagnose_visibility는 이름으로 호출 가능. search_masters를 먼저 호출할 필요 없음.
+  예: diagnose_visibility(master_id="조조형우") → 내부에서 검색 + 진단 한 번에 수행.
 - "게시판이 왜 안 보여?" → get_community_settings로 진단
 - "응원하기가 왜 안 보여?" → get_community_settings로 진단
 - diagnose_visibility 결과의 first_failure와 recommendation을 유저에게 전달

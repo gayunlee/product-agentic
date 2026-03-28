@@ -202,18 +202,29 @@ def check_idempotency(action: str, context: dict) -> dict:
 
 @tool
 def diagnose_visibility(master_id: str) -> dict:
-    """상품이 고객에게 보이지 않는 원인을 진단합니다.
+    """상품이 고객에게 보이지 않는 원인을 진단합니다. 이름 또는 cmsId로 호출 가능.
 
+    ⚡ 이름으로 호출하면 내부에서 마스터 검색까지 자동 수행 (search_masters 별도 호출 불필요).
     노출 사전조건 체인을 순서대로 확인하여 첫 번째 실패 지점을 찾습니다:
     마스터 PUBLIC → 메인 상품 ACTIVE → 페이지 ACTIVE → 기간 내 → 옵션 isDisplay
 
     Args:
-        master_id: 마스터 cmsId (예: "35")
+        master_id: 마스터 cmsId (예: "35") 또는 오피셜클럽 이름 (예: "조조형우")
 
     Returns:
         {"visible": True/False, "checks": [...], "first_failure": "...", "recommendation": "..."}
     """
     checks = []
+
+    # 0. 이름으로 호출된 경우 → 자동 검색
+    if not master_id.isdigit():
+        search_result = _api_get("/v1/masters", {"searchKeyword": master_id})
+        if isinstance(search_result, list) and search_result:
+            master_id = str(search_result[0].get("cmsId", ""))
+            if not master_id:
+                return {"visible": False, "checks": [], "first_failure": f"'{master_id}' 검색 결과 없음", "recommendation": "정확한 오피셜클럽 이름을 확인하세요."}
+        else:
+            return {"visible": False, "checks": [], "first_failure": f"'{master_id}' 검색 결과 없음", "recommendation": "정확한 오피셜클럽 이름을 확인하세요."}
 
     # 1. 마스터 상태 확인
     master = _api_get(f"/v1/masters/{master_id}")
