@@ -453,22 +453,49 @@ def update_product_page_status(product_page_id: str, status: str = "ACTIVE") -> 
 
 @tool
 def update_product_page(product_page_id: str, updates: dict) -> dict:
-    """상품 페이지의 속성을 변경합니다 (히든 처리, 편지글 설정 등).
+    """상품 페이지의 속성을 변경합니다.
+
+    현재 데이터를 자동으로 조회한 뒤, 변경할 필드만 덮어쓰고 전체 데이터로 PATCH합니다.
+    부분 업데이트를 지원하지 않는 API 제약을 내부에서 처리합니다.
 
     선행 조건: product_page_id 필수
     주의: 반드시 유저 확인 후 실행.
-    용도: isHidden, displayLetterStatus, title 등 상품 페이지 속성 변경
+    용도: isHidden, displayLetterStatus, title, 공개기간(startAt/endAt/isAlwaysPublic) 등
 
     Args:
         product_page_id: 상품 페이지 ID
-        updates: 변경할 필드 딕셔너리 (예: {"isHidden": true, "displayLetterStatus": "ACTIVE"})
+        updates: 변경할 필드 딕셔너리 (예: {"isHidden": true}, {"startAt": "2026-04-01", "endAt": "2026-04-30"})
 
-    예시: update_product_page("148", {"isHidden": true})
+    예시:
+        update_product_page("148", {"isHidden": true})
+        update_product_page("148", {"startAt": "2026-04-01", "endAt": "2026-04-30", "isAlwaysPublic": false})
     """
     if MOCK_MODE:
         return _get_mock("update_product_page")
+
+    # PATCH API가 전체 필드를 요구하므로, 현재 데이터를 먼저 조회하여 병합
+    PATCH_REQUIRED_FIELDS = [
+        "title", "status", "type", "isAlwaysPublic", "startAt", "endAt",
+        "isAlwaysApply", "applyStartAt", "applyEndAt",
+        "isHidden", "isChangeable", "displayLetterStatus",
+        "contents", "mainContents",
+    ]
+
     with _client() as c:
-        r = c.patch(f"/v1/product-group/{product_page_id}", json=updates)
+        # 1. 현재 데이터 조회
+        detail_resp = c.get(f"/v1/product-group/{product_page_id}")
+        if detail_resp.status_code >= 400:
+            return {"error": True, "message": f"상품 페이지 조회 실패: {detail_resp.status_code}"}
+        current = detail_resp.json()
+
+        # 2. 필수 필드를 현재 데이터에서 가져오고, updates로 덮어쓰기
+        body = {"id": product_page_id}
+        for field in PATCH_REQUIRED_FIELDS:
+            body[field] = current.get(field)
+        body.update(updates)
+
+        # 3. PATCH 실행
+        r = c.patch("/v1/product-group", json=body)
         return _safe_request(r)
 
 

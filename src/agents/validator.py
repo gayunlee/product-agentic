@@ -366,6 +366,56 @@ def check_cascading_effects(action: str, context: dict) -> dict:
                         ],
                     }
 
+    # 히든 해제 시 → 기간 충돌 검사 (API는 생성 시에만 검사, 수정 시 미검사)
+    if action == "update_product_page" and context.get("isHidden") is False:
+        product_page_id = context.get("product_page_id", "")
+        if master_id and product_page_id:
+            # 변경 대상 페이지 상세 조회
+            target = _api_get(f"/v1/product-group/{product_page_id}")
+            if isinstance(target, dict) and not target.get("isAlwaysPublic", True):
+                target_start = target.get("startAt", "")
+                target_end = target.get("endAt", "")
+
+                # 같은 마스터의 다른 비히든 ACTIVE 페이지와 기간 겹침 확인
+                pages = _api_get("/v1/product-group", {"masterId": master_id})
+                if isinstance(pages, list):
+                    for page in pages:
+                        if page.get("id") == product_page_id:
+                            continue
+                        if page.get("status") != "ACTIVE":
+                            continue
+                        # 히든 여부는 상세 API에서 확인
+                        detail = _api_get(f"/v1/product-group/{page['id']}")
+                        if isinstance(detail, dict) and detail.get("isHidden", False):
+                            continue  # 히든 페이지는 충돌 대상 아님
+
+                        # 상시공개 페이지가 있으면 무조건 충돌
+                        if detail.get("isAlwaysPublic", False):
+                            return {
+                                "has_warning": True,
+                                "warning": f"히든 해제 시 기간 충돌이 발생합니다. "
+                                           f"'{detail.get('title', '')}' 페이지가 상시공개 상태입니다. "
+                                           f"히든을 해제하면 상시공개 페이지가 비활성화됩니다.",
+                                "suggested_actions": [
+                                    {"label": "히든 유지", "action": "cancel"},
+                                ],
+                            }
+
+                        # 날짜지정 페이지끼리 기간 겹침 확인
+                        page_start = detail.get("startAt", "")
+                        page_end = detail.get("endAt", "")
+                        if target_start and target_end and page_start and page_end:
+                            if target_start <= page_end and target_end >= page_start:
+                                return {
+                                    "has_warning": True,
+                                    "warning": f"히든 해제 시 기간 충돌이 발생합니다. "
+                                               f"'{detail.get('title', '')}' 페이지와 공개기간이 겹칩니다 "
+                                               f"({page_start}~{page_end}).",
+                                    "suggested_actions": [
+                                        {"label": "히든 유지", "action": "cancel"},
+                                    ],
+                                }
+
     return {"has_warning": False, "warning": "", "suggested_actions": []}
 
 
