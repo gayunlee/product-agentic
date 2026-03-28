@@ -55,8 +55,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.agents import create_agent_system, AgentSystem
-from src.context import SessionStore
-from src.router import PatternRouter, LLMRouter
+from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
@@ -68,15 +67,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 시스템 + 대화 맥락 관리
+# 세션별 에이전트 시스템 + Memory 관리
 _sessions: dict[str, AgentSystem] = {}
-_store = SessionStore()
+_memories: dict[str, AgentMemory | None] = {}
 _DEFAULT_SESSION = "default"
 
 
-def _get_system(session_id: str = _DEFAULT_SESSION) -> AgentSystem:
-    if session_id not in _sessions:
-        _sessions[session_id] = create_agent_system()
+def _get_memory(session_id: str = _DEFAULT_SESSION) -> AgentMemory | None:
+    if session_id not in _memories:
+        _memories[session_id] = create_memory_session(session_id)
+    return _memories[session_id]
+
+
+def _get_system(session_id: str = _DEFAULT_SESSION, memory_context: str = "") -> AgentSystem:
+    # 매번 새로 생성 — memory_context가 달라지므로
+    _sessions[session_id] = create_agent_system(memory_context=memory_context)
     return _sessions[session_id]
 
 
@@ -223,106 +228,38 @@ def _try_parse_agent_response(text: str) -> dict | None:
     return None
 
 
-def _call_executor(message: str, system: AgentSystem, session_id: str) -> ChatResponse:
-    """수행 에이전트 호출 → structured_output → 렌더링."""
-    from src.agents.response import ExecutorOutput, AgentResponse, render_response
-
-    _store.set_active_agent(session_id, "executor")
-    system.executor(message)
-    try:
-        output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
-        print(f"📋 structured_output: type={output.response_type} data_keys={list(output.data.keys())}")
-        resp = AgentResponse.from_executor_output(output)
-        msg, buttons, mode = render_response(resp)
-        print(f"📋 렌더링: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
-        _store.add_assistant_message(session_id, msg, mode)
-        return ChatResponse(message=msg, buttons=buttons, mode=mode)
-    except Exception as e:
-        print(f"⚠️ structured_output 실패: {e}")
-        fallback = _extract_text(system.executor.messages[-1] if system.executor.messages else {})
-        _store.add_assistant_message(session_id, fallback or str(e), "error")
-        return ChatResponse(message=fallback or str(e))
-
-
-def _call_domain(message: str, system: AgentSystem, session_id: str) -> ChatResponse:
-    """도메인 에이전트 호출."""
-    _store.set_active_agent(session_id, "domain")
-    result = system.domain(message)
-    text = _extract_text(result)
-    _store.add_assistant_message(session_id, text, "domain")
-    # 도메인은 단발성 → 해제
-    _store.release_active_agent(session_id)
-    return ChatResponse(message=text)
-
-
-def _route_to_agent(route: str, message: str, system: AgentSystem, session_id: str) -> ChatResponse:
-    """분류 결과에 따라 에이전트 호출."""
-    ctx = _store.get_or_create(session_id)
-
-    if route == "CONTINUE":
-        # 이전 에이전트에 그대로 전달
-        agent = ctx.active_agent or "executor"
-        print(f"📎 CONTINUE → {agent}")
-        if agent == "executor":
-            return _call_executor(message, system, session_id)
-        else:
-            return _call_domain(message, system, session_id)
-
-    if route == "EXECUTOR":
-        return _call_executor(message, system, session_id)
-
-    if route == "DOMAIN":
-        return _call_domain(message, system, session_id)
-
-    if route == "REJECT":
-        msg = (
-            "죄송합니다, 상품 세팅 관련 요청만 도와드릴 수 있습니다.\n\n"
-            "도움이 필요하시면 다음과 같이 요청해보세요:\n"
-            "- 상품 페이지 조회/수정\n"
-            "- 노출 문제 진단\n"
-            "- 도메인 개념 질문"
-        )
-        _store.add_assistant_message(session_id, msg, "reject")
-        _store.release_active_agent(session_id)
-        return ChatResponse(message=msg, mode="reject")
-
-    # SELF
-    msg = (
-        "안녕하세요! 관리자센터 상품 세팅 AI 어시스턴트입니다.\n\n"
-        "다음과 같은 작업을 도와드릴 수 있습니다:\n"
-        "- 상품/상품페이지 노출 문제 진단\n"
-        "- 상품 공개/비공개/히든 처리\n"
-        "- 관리자센터 페이지 이동 안내\n"
-        "- 도메인 개념 설명\n\n"
-        "무엇을 도와드릴까요?"
-    )
-    _store.add_assistant_message(session_id, msg, "idle")
-    return ChatResponse(message=msg, mode="idle")
-
-
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
-    """2티어 라우팅: 패턴 매칭 → LLM 라우터 → 에이전트 호출."""
-    system = _get_system(session_id)
-    ctx = _store.get_or_create(session_id)
-    _store.add_user_message(session_id, message)
-    print(f"📥 msg='{message[:50]}' session={session_id} active={ctx.active_agent} last_mode={ctx.last_response_mode}")
+    """오케스트레이터 LLM 기반: Memory → 오케스트레이터 → 하위 에이전트."""
+    mem = _get_memory(session_id)
+    print(f"📥 msg='{message[:50]}' session={session_id}")
 
-    # Step 1: 활성 에이전트가 있으면 직접 전달
-    if ctx.active_agent:
-        print(f"📎 활성 에이전트 유지: {ctx.active_agent}")
-        return _route_to_agent("CONTINUE", message, system, session_id)
+    # 1. Memory에 유저 메시지 저장
+    save_turn(mem, "user", message)
 
-    # Step 2: Tier 1 — 패턴 매칭
-    route = PatternRouter.classify(message, ctx)
-    if route:
-        print(f"📎 Tier 1 패턴 매칭: {route}")
-        return _route_to_agent(route, message, system, session_id)
+    # 2. Memory context 조회 → 오케스트레이터 프롬프트에 주입
+    memory_context = get_context_for_prompt(mem, message)
+    system = _get_system(session_id, memory_context)
 
-    # Step 3: Tier 2 — LLM 라우터 (풀 맥락)
-    router_context = _store.get_context_for_router(session_id)
-    route = LLMRouter.classify(message, router_context, ctx, system.classifier)
-    print(f"📎 Tier 2 LLM 라우터: {route}")
-    return _route_to_agent(route, message, system, session_id)
+    # 3. 오케스트레이터 호출 (라우팅 + 하위 에이전트 호출을 오케스트레이터가 결정)
+    result = system.orchestrator(message)
+    result_text = _extract_text(result)
+
+    # 4. 응답 파싱 — executor 경유 시 __agent_response__ JSON이 포함됨
+    agent_response = _try_parse_agent_response(result_text)
+    if agent_response:
+        msg = agent_response.get("message", result_text)
+        buttons = agent_response.get("buttons", [])
+        mode = agent_response.get("mode", "idle")
+    else:
+        msg = result_text
+        buttons = []
+        mode = _detect_mode(result_text)
+
+    # 5. Memory에 어시스턴트 응답 저장
+    save_turn(mem, "assistant", msg[:500])
+
+    print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
+    return ChatResponse(message=msg, buttons=buttons, mode=mode)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -390,9 +327,9 @@ async def chat_stream(req: ChatRequest):
 
 @app.post("/reset")
 async def reset():
-    global _sessions
+    global _sessions, _memories
     _sessions.clear()
-    _store.clear_all()
+    _memories.clear()
     print("🔄 세션 초기화 완료")
     return {"status": "ok"}
 

@@ -48,22 +48,30 @@ O6. 하위 에이전트 응답을 가공하지 않고 그대로 전달.
 
 ## 분류 few-shot 예시
 
-유저: "마스터는 뭐고 오피셜클럽은 뭐야?"     → domain_expert
-유저: "상품페이지 새로 만들려고"               → executor
-유저: "왜 상품페이지 노출이 안돼?"            → executor
-유저: "상품 비공개해줘"                       → executor
-유저: "비공개하면 다른거 공개되나?"            → executor 먼저 (조회) → domain_expert (폴백 규칙)
-유저: "그거 활성화해줘"                       → executor (이전 맥락에서 대상 추론)
-유저: "단건 상품은 변경 못해?"                → domain_expert
-유저: "환불 처리해줘"                         → 거부 (범위 밖)
-유저: "상시랑 기간 설정 뭐가 먼저 노출돼?"    → domain_expert
-유저: "상품페이지에 왜 편지글이 안보여?"       → executor (진단)
-유저: "히든 처리 기능이 뭐야?"                → domain_expert
-유저: "URL로만 접근가능하게 해줘"             → executor (가이드)
+### 일반 개념 질문 → domain_expert
+유저: "마스터는 뭐고 오피셜클럽은 뭐야?"     → domain_expert (개념 설명)
+유저: "히든 처리 기능이 뭐야?"                → domain_expert (개념 설명)
+유저: "단건 상품은 변경 못해?"                → domain_expert (규칙 설명)
+유저: "상시랑 기간 설정 뭐가 먼저 노출돼?"    → domain_expert (규칙 설명)
+유저: "메인 상품페이지가 뭔데?"               → domain_expert (개념 설명)
+유저: "노출은 하는데 구매는 막고 싶은데"        → domain_expert (신청 기간 개념)
+
+### 특정 대상 지칭 → executor
+유저: "상품페이지 새로 만들려고"               → executor (가이드)
+유저: "상품 비공개해줘"                       → executor (실행)
+유저: "왜 상품페이지 노출이 안돼?"            → executor (진단)
+유저: "홍춘욱 상품옵션 뭐있어?"              → executor (특정 대상 조회)
 유저: "게시판이 왜 안 보여?"                  → executor (진단)
-유저: "상품 결제 수단이 상품유형에 따라 다른가?" → domain_expert
-유저: "오피셜클럽명 필드에 뭐가 많은데 다 뭐야?" → domain_expert (필드 설명 = 도메인 개념)
-유저: "노출은 하는데 구매는 막고 싶은데"        → domain_expert (신청 기간 개념 설명)
+유저: "URL로만 접근가능하게 해줘"             → executor (가이드)
+유저: "그거 활성화해줘"                       → executor (이전 맥락 추론)
+
+### 맥락 전환 (실행 중 개념 질문)
+유저: [진단 중] "메인 상품페이지가 뭐야?"     → domain_expert (개념 질문)
+유저: [진단 중] "홍춘욱은?"                  → executor (같은 진단을 다른 대상에)
+유저: [개념 설명 중] "그럼 히든 처리해줘"     → executor (실행 요청으로 전환)
+
+### 범위 밖
+유저: "환불 처리해줘"                         → 거부
 
 ## 중요: 응답 전달 규칙
 
@@ -72,15 +80,36 @@ O7. executor의 응답에 __agent_response__ JSON이 포함되어 있으면,
     직접 풀어쓰지 마세요.
 O8. domain_expert의 응답은 그대로 전달하세요.
 
+## 라우팅 판단 기준
+
+O9. 관련 이력이 있으면 대명사/후속 요청의 맥락을 추론하여 적절한 에이전트에 전달.
+    "그거" → 이전 대화에서 대상 파악 → executor에 전달.
+O10. 라우팅 핵심 기준 — "특정 대상 지칭" vs "일반 개념 질문":
+    - 특정 오피셜클럽/상품/페이지를 지칭하는 요청 → executor (조회/실행/진단 가능)
+      예: "홍춘욱 상품옵션 뭐있어?" → executor
+      예: "홍춘욱은?" (직전에 진단 중이었으면) → executor
+      예: "조조형우 상품페이지 비공개해줘" → executor
+    - 일반 도메인 개념 질문 (특정 대상 없음) → domain_expert
+      예: "메인 상품페이지가 뭐야?" → domain_expert
+      예: "히든이랑 비공개 차이가 뭐야?" → domain_expert
+      예: "상시랑 기간 설정 뭐가 먼저 노출돼?" → domain_expert
+O11. 모호한 요청이 오면:
+    - 직전 맥락에서 가장 가능성 높은 액션을 파악하고, 짧고 자연스럽게 의도를 확인해라.
+      예: 진단 직후 "홍춘욱은?" → "홍춘욱 오피셜클럽 노출 진단을 하시겠어요?"
+      예: "상품페이지 안 보이게 해줘" → "구독 페이지에서 아예 안 보이게 하시겠어요, 아니면 특정 페이지만 비공개 하시겠어요?"
+    - "직전에 ~하셨는데" 같은 맥락 설명 없이, 바로 구체적으로 물어봐라.
+    - 선택지를 나열하지 말고, 가장 가능성 높은 것 하나로 물어봐라.
+
 """
 
 
-def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
+def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_context: str = "") -> Agent:
     """오케스트레이터를 생성합니다.
 
     Args:
         executor: 수행 에이전트
         domain_agent: 도메인 지식 에이전트
+        memory_context: AgentCore Memory에서 가져온 맥락 문자열 (시스템 프롬프트에 주입)
     """
 
     @strands_tool
@@ -124,8 +153,12 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent) -> Agent:
         result = domain_agent(question)
         return str(result)
 
+    prompt = ORCHESTRATOR_PROMPT
+    if memory_context:
+        prompt += f"\n## 관련 이력 (Memory)\n{memory_context}\n"
+
     return Agent(
         model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
         tools=[ask_executor, ask_domain_expert],
-        system_prompt=ORCHESTRATOR_PROMPT,
+        system_prompt=prompt,
     )
