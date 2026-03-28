@@ -488,13 +488,55 @@ def update_product_page(product_page_id: str, updates: dict) -> dict:
             return {"error": True, "message": f"상품 페이지 조회 실패: {detail_resp.status_code}"}
         current = detail_resp.json()
 
-        # 2. 필수 필드를 현재 데이터에서 가져오고, updates로 덮어쓰기
+        # 2. 히든 해제 시 기간 충돌 검사 (API가 수정 시에는 안 막으므로 Tool에서 강제)
+        if updates.get("isHidden") is False and current.get("isHidden") is True:
+            # masterId가 상세 API에 없으므로 masterName으로 검색
+            master_id = ""
+            master_name = current.get("masterName", "")
+            if master_name:
+                search_resp = c.get("/v1/masters", params={"searchKeyword": master_name})
+                if search_resp.status_code == 200:
+                    masters = search_resp.json()
+                    if isinstance(masters, list) and masters:
+                        master_id = str(masters[0].get("cmsId", ""))
+            if master_id and not current.get("isAlwaysPublic", True):
+                target_start = updates.get("startAt", current.get("startAt", ""))
+                target_end = updates.get("endAt", current.get("endAt", ""))
+                # 같은 마스터의 비히든 ACTIVE 페이지 확인
+                pages_resp = c.get("/v1/product-group", params={"masterId": master_id})
+                if pages_resp.status_code == 200:
+                    for page in pages_resp.json():
+                        if page.get("id") == product_page_id or page.get("status") != "ACTIVE":
+                            continue
+                        p_detail = c.get(f"/v1/product-group/{page['id']}")
+                        if p_detail.status_code != 200:
+                            continue
+                        p = p_detail.json()
+                        if p.get("isHidden", False):
+                            continue
+                        if p.get("isAlwaysPublic", False):
+                            return {
+                                "warning": True,
+                                "message": f"히든 해제 시 기간 충돌: '{p.get('title', '')}' 페이지가 상시공개 상태입니다. "
+                                           f"히든을 해제하면 상시공개 페이지가 비활성화됩니다.",
+                            }
+                        p_start = p.get("startAt", "")
+                        p_end = p.get("endAt", "")
+                        if target_start and target_end and p_start and p_end:
+                            if target_start <= p_end and target_end >= p_start:
+                                return {
+                                    "warning": True,
+                                    "message": f"히든 해제 시 기간 충돌: '{p.get('title', '')}' 페이지와 "
+                                               f"공개기간이 겹칩니다 ({p_start}~{p_end}).",
+                                }
+
+        # 3. 필수 필드를 현재 데이터에서 가져오고, updates로 덮어쓰기
         body = {"id": product_page_id}
         for field in PATCH_REQUIRED_FIELDS:
             body[field] = current.get(field)
         body.update(updates)
 
-        # 3. PATCH 실행
+        # 4. PATCH 실행
         r = c.patch("/v1/product-group", json=body)
         return _safe_request(r)
 
