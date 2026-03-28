@@ -56,6 +56,7 @@ from pydantic import BaseModel
 
 from src.agents import create_agent_system, AgentSystem
 from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
+from src.vector_router import VectorRouter
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
@@ -70,6 +71,7 @@ app.add_middleware(
 # 세션별 에이전트 시스템 + Memory 관리
 _sessions: dict[str, AgentSystem] = {}
 _memories: dict[str, AgentMemory | None] = {}
+_vector_router = VectorRouter()
 _DEFAULT_SESSION = "default"
 
 
@@ -236,19 +238,58 @@ def _try_parse_agent_response(text: str) -> dict | None:
     return None
 
 
+def _call_executor_direct(message: str, system: AgentSystem) -> tuple[str, list, str]:
+    """오케스트레이터 없이 executor 직접 호출 → structured_output → 렌더링."""
+    from src.agents.response import ExecutorOutput, AgentResponse, render_response
+
+    system.executor(message)
+    try:
+        output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
+        resp = AgentResponse.from_executor_output(output)
+        msg, buttons, mode = render_response(resp)
+        return msg, buttons, mode
+    except Exception as e:
+        print(f"⚠️ structured_output 실패: {e}")
+        fallback = _extract_text(system.executor.messages[-1] if system.executor.messages else {})
+        return fallback or str(e), [], "error"
+
+
+def _call_domain_direct(message: str, system: AgentSystem) -> tuple[str, list, str]:
+    """오케스트레이터 없이 domain 직접 호출."""
+    result = system.domain(message)
+    return _extract_text(result), [], "domain"
+
+
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
-    """오케스트레이터 LLM 기반: Memory → 오케스트레이터 → 하위 에이전트."""
+    """벡터 라우터 → 오케스트레이터 LLM fallback."""
     mem = _get_memory(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id}")
 
     # 1. Memory에 유저 메시지 저장
     save_turn(mem, "user", message)
 
-    # 2. Memory context 조회 → 오케스트레이터 프롬프트에 주입
+    # 2. Memory context 조회
     memory_context = get_context_for_prompt(mem, message)
     system = _get_system(session_id, memory_context)
 
-    # 3. 오케스트레이터 호출 (라우팅 + 하위 에이전트 호출을 오케스트레이터가 결정)
+    # 3. 벡터 라우터 시도 (오케스트레이터 LLM 스킵)
+    route, similarity, matched = _vector_router.classify(message)
+    if route:
+        print(f"📎 벡터 라우팅: {route} (유사도 {similarity:.3f}, 매칭: '{matched[:30]}')")
+        if route == "executor":
+            msg, buttons, mode = _call_executor_direct(message, system)
+        elif route == "domain":
+            msg, buttons, mode = _call_domain_direct(message, system)
+        else:  # reject
+            msg = "죄송합니다, 상품 세팅 관련 요청만 도와드릴 수 있습니다."
+            buttons, mode = [], "reject"
+
+        save_turn(mem, "assistant", msg[:500])
+        print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
+        return ChatResponse(message=msg, buttons=buttons, mode=mode)
+
+    # 4. 벡터 유사도 부족 → 오케스트레이터 LLM fallback
+    print(f"📎 벡터 유사도 부족 ({similarity:.3f}) → 오케스트레이터 fallback")
     result = system.orchestrator(message)
     result_text = _extract_text(result)
 
