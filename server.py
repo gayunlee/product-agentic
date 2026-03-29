@@ -293,10 +293,16 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     result = system.orchestrator(message)
     result_text = _extract_text(result)
 
-    # 4. 응답 — executor/domain 텍스트를 오케스트레이터가 그대로 전달
-    msg = result_text
-    buttons = []
-    mode = _detect_mode(result_text)
+    # 4. 응답 파싱 — diagnose 등 __agent_response__ JSON이 포함될 수 있음
+    agent_response = _try_parse_agent_response(result_text)
+    if agent_response:
+        msg = agent_response.get("message", result_text)
+        buttons = agent_response.get("buttons", [])
+        mode = agent_response.get("mode", "idle")
+    else:
+        msg = result_text
+        buttons = []
+        mode = _detect_mode(result_text)
 
     # 5. Memory에 어시스턴트 응답 저장
     save_turn(mem, "assistant", msg[:500])
