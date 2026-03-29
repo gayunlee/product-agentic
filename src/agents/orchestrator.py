@@ -161,15 +161,49 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         return render_response_json(resp)
 
     @strands_tool
-    def query(request: str) -> str:
-        """조회. 오피셜클럽, 상품 페이지, 상품 옵션 목록/상세 조회에 사용.
+    def query(master_name: str, query_type: str = "product_pages") -> str:
+        """조회. 오피셜클럽의 상품 페이지 또는 상품 옵션 목록을 조회합니다.
 
         Args:
-            request: 조회 요청 (예: "홍춘욱 상품옵션 뭐있어?")
+            master_name: 오피셜클럽 이름 (예: "조조형우", "홍춘욱")
+            query_type: 조회 유형 — "product_pages"(상품페이지 목록) 또는 "master_detail"(클럽 상세)
         """
-        from src.agents.executor import create_executor_agent
-        query_executor = create_executor_agent(task_type="query")
-        return _extract_result(query_executor(request))
+        from src.tools.admin_api import search_masters, get_product_page_list, get_master_detail
+        from src.agents.response import AgentResponse, render_response_json
+
+        # 1. 마스터 검색
+        masters_result = search_masters(search_keyword=master_name)
+        masters = masters_result.get("masters", [])
+        if not masters:
+            resp = AgentResponse(type="error", summary=f"'{master_name}' 오피셜클럽을 찾을 수 없습니다.", data={"guide": "정확한 오피셜클럽 이름을 확인하세요."})
+            return render_response_json(resp)
+
+        master = masters[0]
+        cms_id = str(master.get("cmsId", ""))
+        master_display = master.get("name", master_name)
+
+        # 2. 조회
+        if query_type == "product_pages":
+            pages = get_product_page_list(master_id=cms_id)
+            page_list = pages if isinstance(pages, list) else pages.get("pages", [])
+            items = [
+                {"제목": p.get("title", ""), "코드": p.get("code", ""), "상태": p.get("status", ""), "공개": "상시" if p.get("isAlwaysPublic") else "기간설정"}
+                for p in page_list
+            ]
+            resp = AgentResponse(
+                type="info",
+                summary=f"{master_display} 오피셜클럽의 상품페이지 {len(items)}개",
+                data={"title": f"{master_display} 상품페이지 목록", "items": items},
+            )
+        else:
+            detail = get_master_detail(master_id=cms_id)
+            resp = AgentResponse(
+                type="info",
+                summary=f"{master_display} 오피셜클럽 상세 정보",
+                data={"title": master_display, "items": [{"항목": k, "값": str(v)[:50]} for k, v in detail.items() if k in ("name", "clubPublicType", "cmsId", "displayName")]},
+            )
+
+        return render_response_json(resp)
 
     @strands_tool
     def execute(request: str) -> str:
