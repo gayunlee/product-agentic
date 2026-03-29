@@ -217,15 +217,26 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         return _extract_result(exec_executor(request))
 
     @strands_tool
-    def guide(request: str) -> str:
-        """가이드. 페이지 생성, 관리자센터 이동 안내에 사용.
+    def guide(page_type: str) -> str:
+        """가이드. 관리자센터 페이지 이동 안내에 사용.
+        생성, 수정, 설정 페이지로의 이동을 안내합니다.
 
         Args:
-            request: 안내 요청 (예: "상품페이지 새로 만들려고")
+            page_type: 이동할 페이지 유형 — "product_page_create"(상품페이지 생성), "product_page_list"(목록), "official_club"(오피셜클럽), "main_product"(메인 상품), "board_setting"(게시판 설정)
         """
-        from src.agents.executor import create_executor_agent
-        guide_executor = create_executor_agent(task_type="guide")
-        return _extract_result(guide_executor(request))
+        from src.tools.admin_api import navigate
+        from src.agents.response import AgentResponse, render_response_json
+
+        result = navigate(page_type=page_type)
+        url = result.get("url", "/product/page/list")
+        label = result.get("label", "관리자센터")
+
+        resp = AgentResponse(
+            type="guide",
+            summary=f"{label} 페이지로 이동하세요.",
+            data={"label": label, "url": url, "steps": [f"{label} 페이지에서 설정을 진행하세요."]},
+        )
+        return render_response_json(resp)
 
     @strands_tool
     def ask_domain_expert(question: str) -> str:
