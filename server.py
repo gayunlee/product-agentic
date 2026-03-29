@@ -125,8 +125,13 @@ def _inject_token(context: dict | None):
 
 # Tool 이름 → 한국어 진행 상황 매핑
 TOOL_PROGRESS = {
-    "ask_executor": "🔧 수행 에이전트에게 요청 중...",
+    # 오케스트레이터 Tool
+    "diagnose": "🔍 노출 진단 중...",
+    "query": "📋 조회 중...",
+    "execute": "🔧 실행 요청 처리 중...",
+    "guide": "🔗 가이드 생성 중...",
     "ask_domain_expert": "📚 도메인 지식 조회 중...",
+    # executor Tool
     "validate": "✅ 사전조건 확인 중...",
     "search_masters": "🔍 오피셜클럽 검색 중...",
     "get_master_detail": "📋 오피셜클럽 상세 조회 중...",
@@ -325,47 +330,57 @@ async def chat(req: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """SSE 스트리밍 — 진행 상황을 실시간으로 보여줌."""
+    """SSE 스트리밍 — 텍스트 청크 + Tool 진행 상황을 실시간 전송."""
     _inject_token(req.context)
     session_id = req.session_id or _DEFAULT_SESSION
-    event_queue: queue.Queue = queue.Queue()
+    message = req.message.strip()
+
+    mem = _get_memory(session_id)
+    save_turn(mem, "user", message)
+    memory_context = get_context_for_prompt(mem, message)
+    system = _get_system(session_id, memory_context)
 
     async def event_generator():
-        # 에이전트를 별도 스레드에서 실행
-        result_holder = {"result": None, "error": None}
+        full_text = ""
+        tool_count = 0
 
-        def run_agent():
-            try:
-                orchestrator = _get_orchestrator(session_id)
-                result = orchestrator(req.message.strip())
-                result_holder["result"] = _extract_text(result)
-            except Exception as e:
-                result_holder["error"] = str(e)
-            finally:
-                event_queue.put({"type": "done"})
+        try:
+            async for event in system.orchestrator.stream_async(message):
+                # 텍스트 청크
+                data = event.get("data", "")
+                if data:
+                    full_text += data
+                    yield f"event: text\ndata: {json.dumps({'text': data}, ensure_ascii=False)}\n\n"
 
-        thread = threading.Thread(target=run_agent)
-        thread.start()
+                # Tool 호출 시작
+                raw = event.get("event", {})
+                tool_use = raw.get("contentBlockStart", {}).get("start", {}).get("toolUse")
+                if tool_use:
+                    tool_count += 1
+                    tool_name = tool_use["name"]
+                    progress = TOOL_PROGRESS.get(tool_name, f"🔄 {tool_name} 처리 중...")
+                    yield f"event: progress\ndata: {json.dumps({'message': progress, 'tool': tool_name, 'count': tool_count}, ensure_ascii=False)}\n\n"
 
-        # 큐에서 이벤트를 읽어 SSE로 전송
-        while True:
-            try:
-                event = await asyncio.get_event_loop().run_in_executor(None, event_queue.get, True, 0.5)
-            except queue.Empty:
-                continue
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'message': f'오류 발생: {e}'}, ensure_ascii=False)}\n\n"
+            return
 
-            if event["type"] == "done":
-                # 최종 응답 전송
-                if result_holder["error"]:
-                    final = {"message": f"오류 발생: {result_holder['error']}"}
-                else:
-                    final = {"message": result_holder["result"]}
-                yield f"event: message\ndata: {json.dumps(final, ensure_ascii=False)}\n\n"
-                break
-            elif event["type"] == "progress":
-                yield f"event: progress\ndata: {json.dumps({'message': event['message'], 'tool': event['tool']}, ensure_ascii=False)}\n\n"
+        # 최종 응답 파싱 (버튼/모드 추출)
+        agent_response = _try_parse_agent_response(full_text)
+        if agent_response:
+            msg = agent_response.get("message", full_text)
+            buttons = agent_response.get("buttons", [])
+            mode = agent_response.get("mode", "idle")
+        else:
+            msg = full_text
+            buttons = []
+            mode = _detect_mode(full_text)
 
-        thread.join(timeout=5)
+        save_turn(mem, "assistant", msg[:500])
+
+        yield f"event: done\ndata: {json.dumps({'message': msg, 'buttons': buttons, 'mode': mode}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

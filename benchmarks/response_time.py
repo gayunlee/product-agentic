@@ -51,6 +51,13 @@ SCENARIOS = [
             "에이전트 테스트 오피셜 클럽 상품페이지 목록 보여줘",
         ],
     },
+    {
+        "name": "실행 멀티턴 (슬롯 필링)",
+        "messages": [
+            "상품 비공개해줘",
+            "조조형우",
+        ],
+    },
 ]
 
 
@@ -89,7 +96,7 @@ def run_scenario(scenario: dict, token: str) -> dict:
     }
 
 
-def run_benchmark(token: str, runs: int = 3, scenarios: list | None = None):
+def run_benchmark(token: str, runs: int = 3, scenarios: list | None = None, tag: str = "baseline"):
     """벤치마크 실행."""
     target_scenarios = scenarios or SCENARIOS
     all_results = []
@@ -139,9 +146,10 @@ def run_benchmark(token: str, runs: int = 3, scenarios: list | None = None):
             print(f"    {turn_name}: 평균 {stats['mean']}s (범위 {stats['min']}~{stats['max']}s)")
 
     # 결과 저장
-    output_path = f"benchmarks/results_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    output_path = f"benchmarks/results_{tag}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    output = {"tag": tag, "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S'), "results": all_results}
     with open(output_path, "w") as f:
-        json.dump(all_results, f, ensure_ascii=False, indent=2)
+        json.dump(output, f, ensure_ascii=False, indent=2)
     print(f"\n결과 저장: {output_path}")
 
     return all_results
@@ -150,8 +158,9 @@ def run_benchmark(token: str, runs: int = 3, scenarios: list | None = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="오케스트레이터 응답 속도 벤치마크")
     parser.add_argument("--runs", type=int, default=3, help="시나리오당 실행 횟수")
-    parser.add_argument("--token", type=str, required=True, help="admin API 토큰")
+    parser.add_argument("--token", type=str, default="", help="admin API 토큰 (MOCK_MODE면 불필요)")
     parser.add_argument("--scenario", type=str, help="특정 시나리오만 실행 (이름)")
+    parser.add_argument("--tag", type=str, default="baseline", help="측정 태그 (baseline, vector-fewshot, prompt-cache, both)")
     args = parser.parse_args()
 
     target = None
@@ -162,4 +171,4 @@ if __name__ == "__main__":
             print(f"사용 가능: {[s['name'] for s in SCENARIOS]}")
             exit(1)
 
-    run_benchmark(args.token, args.runs, target)
+    run_benchmark(args.token, args.runs, target, args.tag)

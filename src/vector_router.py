@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 SCENARIOS_DIR = Path(__file__).parent.parent / "scenarios" / "multi-agent"
 EMBEDDINGS_CACHE = Path(__file__).parent.parent / "benchmarks" / "scenario_embeddings.json"
-SIMILARITY_THRESHOLD = 0.75  # 이 이상이면 즉시 라우팅
+SIMILARITY_THRESHOLD = 0.65  # 이 이상이면 즉시 라우팅
 
 
 @dataclass

@@ -212,9 +212,7 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         Args:
             request: 실행 요청 (예: "조조형우 상품페이지 비공개해줘")
         """
-        from src.agents.executor import create_executor_agent
-        exec_executor = create_executor_agent(task_type="update")
-        return _extract_result(exec_executor(request))
+        return _extract_result(executor(request))
 
     @strands_tool
     def guide(page_type: str) -> str:

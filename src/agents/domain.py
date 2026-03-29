@@ -105,17 +105,19 @@ def create_domain_agent() -> Agent:
     KNOWLEDGE_BASE_ID가 있으면 RAG 모드 (retrieve Tool 사용),
     없으면 폴백 모드 (시스템 프롬프트 내장 지식).
     """
+    model = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0")
+
     if KNOWLEDGE_BASE_ID:
         from strands_tools import retrieve
         return Agent(
-            model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+            model=model,
             tools=[retrieve],
             system_prompt=DOMAIN_PROMPT_RAG,
         )
 
     # 폴백: KB 없이 프롬프트 내장 지식
     return Agent(
-        model=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"),
+        model=model,
         tools=[],
         system_prompt=DOMAIN_PROMPT_FALLBACK,
     )
