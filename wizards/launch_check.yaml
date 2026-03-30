@@ -1,0 +1,15 @@
+id: launch_check
+label: 런칭 체크
+description: 오피셜클럽 런칭 준비 상태를 점검합니다
+icon: "🚀"
+
+steps:
+  - id: select_master
+    type: select_master
+    label: 클럽 선택
+    message: "**런칭 체크** — 오피셜클럽을 선택하세요."
+
+  - id: execute
+    type: execute
+    label: 진단 실행
+    handler: launch_check

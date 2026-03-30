@@ -435,7 +435,8 @@ async def chat_stream(req: ChatRequest):
 @app.get("/wizard/actions")
 async def wizard_actions():
     """사용 가능한 위저드 액션 목록."""
-    return [{"action": k, **v} for k, v in WIZARD_ACTIONS.items()]
+    from src.wizard import _get_engine
+    return _get_engine().get_actions()
 
 
 @app.post("/reset")
