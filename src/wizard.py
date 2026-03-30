@@ -244,8 +244,8 @@ class WizardState:
             )
             if cascade and cascade.get("warning"):
                 warning = f"\n\n⚠️ {cascade['warning']}"
-        except Exception:
-            pass
+        except Exception as e:
+            warning = f"\n\n⚠️ 연쇄 효과 확인 실패 — 주의해서 진행해주세요. ({e})"
 
         msg = f"**{action_label}**\n\n**대상**: {target}{warning}\n\n진행하시겠어요?"
         buttons = [
@@ -270,8 +270,14 @@ class WizardState:
             ]
             return msg, buttons, "done"
         except Exception as e:
-            self.reset()
-            return f"⚠️ 실행 중 오류가 발생했습니다: {e}", [], "error"
+            # 리셋하지 않고 재시도 가능하게
+            self.step = "confirm"
+            msg = f"⚠️ 실행 중 오류가 발생했습니다: {e}"
+            buttons = [
+                {"type": "action", "label": "다시 시도", "action": "execute", "variant": "primary"},
+                {"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"},
+            ]
+            return msg, buttons, "error"
 
     def _execute_diagnose(self) -> tuple[str, list[dict], str]:
         """진단 실행."""
