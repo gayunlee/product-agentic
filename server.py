@@ -58,6 +58,7 @@ from src.agents import create_agent_system, AgentSystem
 from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
 from src.vector_router import VectorRouter
 from src.wizard import WizardState, create_wizard, WIZARD_ACTIONS
+from schema.types import build_response, build_error_response, AgentResponse as AgentResponseSchema
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
@@ -97,6 +98,9 @@ def _get_system(session_id: str = _DEFAULT_SESSION, memory_context: str = "") ->
     return _sessions[session_id]
 
 
+_MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
+
+
 class ChatRequest(BaseModel):
     message: str = ""
     button: dict | None = None  # 위저드 버튼 입력: {type, value?, action?}
@@ -105,11 +109,15 @@ class ChatRequest(BaseModel):
     context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId?, token? }
 
 
-class ChatResponse(BaseModel):
-    message: str
-    buttons: list[dict] = []
-    mode: str = "idle"
-    mock_mode: bool = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
+def _to_response(
+    message: str,
+    buttons: list[dict] | None = None,
+    mode: str = "idle",
+    step: dict | None = None,
+) -> dict:
+    """모든 응답 경로의 단일 출구. Phase 1 계약(AgentResponse) 준수."""
+    resp = build_response(message, buttons, mode, step, meta={"mock_mode": _MOCK_MODE})
+    return resp.model_dump()
 
 
 def _inject_token(context: dict | None):
@@ -269,7 +277,7 @@ def _call_domain_direct(message: str, system: AgentSystem) -> tuple[str, list, s
     return _extract_text(result), [], "domain"
 
 
-def _handle_message(message: str, session_id: str, context: dict | None = None) -> ChatResponse:
+def _handle_message(message: str, session_id: str, context: dict | None = None) -> dict:
     """벡터 라우터 → 오케스트레이터 LLM fallback."""
     mem = _get_memory(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id}")
@@ -295,14 +303,15 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
 
         save_turn(mem, "assistant", msg[:500])
         print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
-        return ChatResponse(message=msg, buttons=buttons, mode=mode)
+        return _to_response(msg, buttons, mode)
 
     # 4. 벡터 유사도 부족 → 오케스트레이터 LLM fallback
     print(f"📎 벡터 유사도 부족 ({similarity:.3f}) → 오케스트레이터 fallback")
     result = system.orchestrator(message)
     result_text = _extract_text(result)
 
-    # 4. 응답 파싱 — diagnose 등 __agent_response__ JSON이 포함될 수 있음
+    # 응답 파싱 — diagnose 등 __agent_response__ JSON이 포함될 수 있음
+    # TODO: Phase 2에서 __agent_response__ 파싱 제거 예정
     agent_response = _try_parse_agent_response(result_text)
     if agent_response:
         msg = agent_response.get("message", result_text)
@@ -317,10 +326,10 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     save_turn(mem, "assistant", msg[:500])
 
     print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
-    return ChatResponse(message=msg, buttons=buttons, mode=mode)
+    return _to_response(msg, buttons, mode)
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(req: ChatRequest):
     try:
         _inject_token(req.context)
@@ -336,7 +345,7 @@ async def chat(req: ChatRequest):
                 msg, buttons, mode = wizard.start_with_master(master_id)
             else:
                 msg, buttons, mode = wizard.start()
-            return ChatResponse(message=msg, buttons=buttons, mode=mode)
+            return _to_response(msg, buttons, mode)
 
         # 2. 위저드 버튼 입력
         if req.button:
@@ -346,9 +355,9 @@ async def chat(req: ChatRequest):
                 msg, buttons, mode = wizard.handle(req.button)
                 if not wizard.is_active():
                     _wizards.pop(session_id, None)
-                return ChatResponse(message=msg, buttons=buttons, mode=mode)
+                return _to_response(msg, buttons, mode)
             # 위저드 종료 후 버튼 클릭 → 무시
-            return ChatResponse(message="이전 작업이 완료되었습니다. 새 작업을 시작해주세요.", buttons=[], mode="idle")
+            return _to_response("이전 작업이 완료되었습니다. 새 작업을 시작해주세요.")
 
         # 3. 위저드 진행 중 자연어 입력
         wizard = _wizards.get(session_id)
@@ -357,12 +366,12 @@ async def chat(req: ChatRequest):
             if wizard.step == "input_master":
                 print(f"🧙 위저드 검색: {req.message}")
                 msg, buttons, mode = wizard._step_select_master(search_keyword=req.message.strip())
-                return ChatResponse(message=msg, buttons=buttons, mode=mode)
+                return _to_response(msg, buttons, mode)
             # 그 외 스텝이면 위저드 보호
-            return ChatResponse(
-                message="진행 중인 작업이 있어요. 계속하시려면 버튼을 눌러주세요.",
-                buttons=[{"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"}],
-                mode="wizard",
+            return _to_response(
+                "진행 중인 작업이 있어요. 계속하시려면 버튼을 눌러주세요.",
+                [{"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"}],
+                "wizard",
             )
 
         # 4. 일반 채팅
@@ -370,7 +379,7 @@ async def chat(req: ChatRequest):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return ChatResponse(message=f"오류 발생: {e}")
+        return _to_response(f"오류 발생: {e}", mode="error")
 
 
 @app.post("/chat/stream")
@@ -413,6 +422,7 @@ async def chat_stream(req: ChatRequest):
             return
 
         # 최종 응답 파싱 (버튼/모드 추출)
+        # TODO: Phase 2에서 __agent_response__ 파싱 제거 예정
         agent_response = _try_parse_agent_response(full_text)
         if agent_response:
             msg = agent_response.get("message", full_text)
@@ -425,7 +435,9 @@ async def chat_stream(req: ChatRequest):
 
         save_turn(mem, "assistant", msg[:500])
 
-        yield f"event: done\ndata: {json.dumps({'message': msg, 'buttons': buttons, 'mode': mode}, ensure_ascii=False)}\n\n"
+        # done 이벤트도 AgentResponse 스키마 준수
+        final = _to_response(msg, buttons, mode)
+        yield f"event: done\ndata: {json.dumps(final, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
