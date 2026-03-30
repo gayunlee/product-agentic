@@ -12,4 +12,31 @@ steps:
   - id: execute
     type: execute
     label: 진단 실행
-    handler: diagnose
+    handler: diagnose_visibility
+    render:
+      type: checklist
+      title: "📊 노출 진단 결과"
+      summary_pass: "{master_name} — 모든 조건 정상."
+      summary_fail: "{master_name} — 원인: {first_failure}"
+      fail_links:
+        master_public:
+          label: 오피셜클럽 설정
+          url: "/master/{master_cms_id}"
+        main_product_active:
+          label: 메인 상품 설정
+          url: "/product/main"
+        page_active:
+          label: 상품 페이지 목록
+          url: "/product/page/list"
+        weblink_set:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+        weblink_target_valid:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+        weblink_target_stable:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+      default_button:
+        label: 설정 관리
+        url: "/product/page/list"

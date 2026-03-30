@@ -12,4 +12,33 @@ steps:
   - id: execute
     type: execute
     label: 진단 실행
-    handler: launch_check
+    handler: diagnose_visibility
+    render:
+      type: launch_report
+      title: "## 🚀 런칭 체크 — {master_name}"
+      summary_pass: "**런칭 준비 완료!** 모든 조건이 정상입니다."
+      summary_fail: "**런칭 불가** — {first_failure}\n위 항목을 해결한 후 다시 체크해주세요."
+      show_pages: true
+      show_products: true
+      fail_links:
+        master_public:
+          label: 오피셜클럽 설정
+          url: "/master/{master_cms_id}"
+        main_product_active:
+          label: 메인 상품 설정
+          url: "/product/main"
+        page_active:
+          label: 상품 페이지 목록
+          url: "/product/page/list"
+        weblink_set:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+        weblink_target_valid:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+        weblink_target_stable:
+          label: 웹링크 설정
+          url: "/master/{master_cms_id}"
+      default_button:
+        label: 설정 관리
+        url: "/product/page/list"

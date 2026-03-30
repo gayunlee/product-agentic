@@ -28,6 +28,19 @@ from src.agents.validator import check_cascading_effects
 
 
 @dataclass
+class RenderConfig:
+    """execute 스텝의 렌더링 설정. YAML render: 블록에서 로드."""
+    type: str = "result"         # checklist, launch_report, result
+    title: str = ""
+    summary_pass: str = ""
+    summary_fail: str = ""
+    show_pages: bool = False
+    show_products: bool = False
+    fail_links: dict[str, dict] = field(default_factory=dict)  # condition → {label, url}
+    default_button: dict | None = None
+
+
+@dataclass
 class StepDefinition:
     id: str
     type: str           # select_master, select_page, select_product, confirm, execute
@@ -40,6 +53,7 @@ class StepDefinition:
     params: dict[str, str] = field(default_factory=dict)
     done_message: str = ""
     done_buttons: list[dict] = field(default_factory=list)
+    render: RenderConfig | None = None
 
 
 @dataclass
@@ -52,8 +66,22 @@ class WizardSchema:
 
     @classmethod
     def from_dict(cls, data: dict) -> WizardSchema:
-        steps = [
-            StepDefinition(
+        steps = []
+        for s in data.get("steps", []):
+            render_data = s.get("render")
+            render_config = None
+            if render_data:
+                render_config = RenderConfig(
+                    type=render_data.get("type", "result"),
+                    title=render_data.get("title", ""),
+                    summary_pass=render_data.get("summary_pass", ""),
+                    summary_fail=render_data.get("summary_fail", ""),
+                    show_pages=render_data.get("show_pages", False),
+                    show_products=render_data.get("show_products", False),
+                    fail_links=render_data.get("fail_links", {}),
+                    default_button=render_data.get("default_button"),
+                )
+            steps.append(StepDefinition(
                 id=s["id"],
                 type=s["type"],
                 label=s["label"],
@@ -64,9 +92,8 @@ class WizardSchema:
                 params=s.get("params", {}),
                 done_message=s.get("done_message", ""),
                 done_buttons=s.get("done_buttons", []),
-            )
-            for s in data.get("steps", [])
-        ]
+                render=render_config,
+            ))
         return cls(
             id=data["id"],
             label=data["label"],
@@ -97,23 +124,44 @@ def _get_api_map():
 # ─── 커스텀 핸들러 ───
 
 
-def _handle_diagnose(state: WizardState) -> tuple[str, list[dict], str]:
-    """노출 진단."""
+# ─── 데이터 핸들러 (데이터만 반환, 렌더링 안 함) ───
+
+
+def _data_diagnose_visibility(state: WizardState) -> dict:
+    """diagnose_visibility 호출 → 원본 데이터 반환."""
     from src.agents.validator import diagnose_visibility
 
     master_cms_id = state.selections.get("master_cms_id", "")
     master_name = state.selections.get("master_name", "")
-    state.reset()
-
     result = diagnose_visibility(master_cms_id or master_name)
-    checks = result.get("checks", [])
-    first_failure = result.get("first_failure")
-    name = result.get("master_name", master_name)
+    return result
 
-    # 체크리스트 렌더링
-    lines = [f"📊 노출 진단 결과"]
+
+DATA_HANDLERS: dict[str, Any] = {
+    "diagnose_visibility": _data_diagnose_visibility,
+}
+
+
+# ─── 렌더러 (데이터 + RenderConfig → message + buttons) ───
+
+
+def _render_checklist(data: dict, config: RenderConfig, selections: dict) -> tuple[str, list[dict], str]:
+    """체크리스트 렌더링."""
+    checks = data.get("checks", [])
+    first_failure = data.get("first_failure")
+    master_name = data.get("master_name", selections.get("master_name", ""))
+
+    fmt = {**selections, "master_name": master_name, "first_failure": first_failure or ""}
+
+    lines = [config.title.format(**fmt) if config.title else "📊 진단 결과"]
     lines.append("")
-    lines.append(f"{name} 노출 진단 완료. " + (f"원인: {first_failure}" if first_failure else "모든 조건 정상."))
+
+    # 요약
+    if first_failure:
+        lines.append(config.summary_fail.format(**fmt) if config.summary_fail else f"원인: {first_failure}")
+    else:
+        lines.append(config.summary_pass.format(**fmt) if config.summary_pass else "모든 조건 정상.")
+
     lines.append("")
     lines.append("| 항목 | 상태 |")
     lines.append("|------|------|")
@@ -125,36 +173,28 @@ def _handle_diagnose(state: WizardState) -> tuple[str, list[dict], str]:
         suffix = " ← 원인" if c is first_fail_check else ""
         lines.append(f"| {label} | {icon} {actual}{suffix} |")
 
-    if first_failure:
-        lines.append("")
-        lines.append("해결이 필요합니다.")
-
     msg = "\n".join(lines)
 
-    # 위저드 종료 후에도 동작하도록 navigate 버튼만 사용
-    nav_url = "/product/page/list"
-    buttons = [_btn_navigate("설정 관리", nav_url)]
+    # 버튼: 실패 항목별 링크
+    buttons = _build_fail_buttons(checks, config, selections)
 
     return msg, buttons, "diagnose"
 
 
-def _handle_launch_check(state: WizardState) -> tuple[str, list[dict], str]:
-    """런칭 체크."""
-    from src.agents.validator import diagnose_visibility
+def _render_launch_report(data: dict, config: RenderConfig, selections: dict) -> tuple[str, list[dict], str]:
+    """런칭 체크 리포트 렌더링."""
+    checks = data.get("checks", [])
+    weblink_warnings = data.get("weblink_warnings", [])
+    first_failure = data.get("first_failure")
+    master_name = data.get("master_name", selections.get("master_name", ""))
 
-    master_cms_id = state.selections.get("master_cms_id", "")
-    master_name = state.selections.get("master_name", "")
-    state.reset()
-
-    result = diagnose_visibility(master_cms_id or master_name)
-    checks = result.get("checks", [])
-    weblink_warnings = result.get("weblink_warnings", [])
+    fmt = {**selections, "master_name": master_name, "first_failure": first_failure or ""}
 
     total = len(checks)
     passed = sum(1 for c in checks if c.get("passed", False))
     all_pass = passed == total
 
-    lines = [f"## 🚀 런칭 체크 — {result.get('master_name', master_name)}"]
+    lines = [config.title.format(**fmt) if config.title else f"## 런칭 체크 — {master_name}"]
     lines.append("")
     lines.append(f"**{passed}/{total} 항목 통과**")
     lines.append("")
@@ -165,19 +205,22 @@ def _handle_launch_check(state: WizardState) -> tuple[str, list[dict], str]:
         actual = c.get("actual", "")
         lines.append(f"{icon} **{label}** — {actual}")
 
-    page_check = next((c for c in checks if c.get("condition") == "page_active"), None)
-    active_pages = page_check.get("pages", []) if page_check else []
-    if active_pages:
-        lines.append("")
-        lines.append("### 공개 중인 상품페이지")
-        for p in active_pages:
-            hidden_tag = " (히든)" if p.get("is_hidden") else ""
-            lines.append(f"- **{p.get('title', '제목 없음')}**{hidden_tag}")
-            for opt in p.get("options", []):
-                display = "공개" if opt.get("is_display") else "비공개"
-                price = opt.get("price", 0)
-                price_str = f"{price:,}원" if isinstance(price, (int, float)) and price > 0 else ""
-                lines.append(f"  - {opt.get('name', '')} ({display}) {price_str}".rstrip())
+    # 상품페이지 + 상품 정보
+    if config.show_pages:
+        page_check = next((c for c in checks if c.get("condition") == "page_active"), None)
+        active_pages = page_check.get("pages", []) if page_check else []
+        if active_pages:
+            lines.append("")
+            lines.append("### 공개 중인 상품페이지")
+            for p in active_pages:
+                hidden_tag = " (히든)" if p.get("is_hidden") else ""
+                lines.append(f"- **{p.get('title', '제목 없음')}**{hidden_tag}")
+                if config.show_products:
+                    for opt in p.get("options", []):
+                        display = "공개" if opt.get("is_display") else "비공개"
+                        price = opt.get("price", 0)
+                        price_str = f"{price:,}원" if isinstance(price, (int, float)) and price > 0 else ""
+                        lines.append(f"  - {opt.get('name', '')} ({display}) {price_str}".rstrip())
 
     if weblink_warnings:
         lines.append("")
@@ -186,56 +229,65 @@ def _handle_launch_check(state: WizardState) -> tuple[str, list[dict], str]:
 
     lines.append("")
     if all_pass:
-        lines.append("**런칭 준비 완료!** 모든 조건이 정상입니다.")
+        lines.append(config.summary_pass.format(**fmt) if config.summary_pass else "모든 조건 정상입니다.")
     else:
-        first_fail = result.get("first_failure", "")
-        lines.append(f"**런칭 불가** — {first_fail}")
-        lines.append("위 항목을 해결한 후 다시 체크해주세요.")
+        lines.append(config.summary_fail.format(**fmt) if config.summary_fail else f"원인: {first_failure}")
 
     msg = "\n".join(lines)
 
+    # 버튼: 공개 페이지 링크 + 실패 항목별 링크
     buttons = []
-    for p in active_pages:
-        page_id = p.get("page_id", "")
-        title = p.get("title", "페이지")
-        if page_id:
-            url, _ = resolve_page_url("product_page_detail", id=page_id)
-            buttons.append(_btn_navigate(f"📄 {title}", url))
+    if config.show_pages:
+        page_check = next((c for c in checks if c.get("condition") == "page_active"), None)
+        active_pages = page_check.get("pages", []) if page_check else []
+        for p in active_pages:
+            page_id = p.get("page_id", "")
+            title = p.get("title", "페이지")
+            if page_id:
+                url, _ = resolve_page_url("product_page_detail", id=page_id)
+                buttons.append(_btn_navigate(f"📄 {title}", url))
 
-    FAIL_PAGE_MAP = {
-        "master_public": ("official_club", {"masterId": master_cms_id}),
-        "main_product_active": ("main_product", {}),
-        "page_active": ("product_page_list", {}),
-        "weblink_set": ("official_club", {"masterId": master_cms_id}),
-        "weblink_target_valid": ("official_club", {"masterId": master_cms_id}),
-        "weblink_target_stable": ("official_club", {"masterId": master_cms_id}),
-    }
+    buttons.extend(_build_fail_buttons(checks, config, selections))
 
-    if not all_pass:
+    return msg, buttons, "launch_check"
+
+
+def _build_fail_buttons(checks: list, config: RenderConfig, selections: dict) -> list[dict]:
+    """실패 항목에 대한 navigate 버튼 생성 (YAML fail_links 기반)."""
+    fmt = {**selections}
+    buttons = []
+    has_failure = any(not c.get("passed", False) for c in checks)
+
+    if has_failure and config.fail_links:
         for c in checks:
             if c.get("passed"):
                 continue
             condition = c.get("condition", "")
-            mapping = FAIL_PAGE_MAP.get(condition)
-            if mapping:
-                page_key, params = mapping
-                url, label = resolve_page_url(page_key, **params)
-                buttons.append(_btn_navigate(label, url))
+            link = config.fail_links.get(condition)
+            if link:
+                url = link["url"].format(**fmt)
+                buttons.append(_btn_navigate(link["label"], url))
 
+    # 중복 제거
     seen = set()
-    unique_buttons = []
+    unique = []
     for b in buttons:
         key = b.get("url", "")
         if key not in seen:
             seen.add(key)
-            unique_buttons.append(b)
+            unique.append(b)
 
-    return msg, unique_buttons, "launch_check"
+    # 버튼 없으면 기본 버튼
+    if not unique and config.default_button:
+        url = config.default_button["url"].format(**fmt)
+        unique.append(_btn_navigate(config.default_button["label"], url))
+
+    return unique
 
 
-CUSTOM_HANDLERS: dict[str, Any] = {
-    "launch_check": _handle_launch_check,
-    "diagnose": _handle_diagnose,
+RENDER_MAP = {
+    "checklist": _render_checklist,
+    "launch_report": _render_launch_report,
 }
 
 
@@ -422,9 +474,21 @@ class WizardState:
         """execute 스텝 실행."""
         step_def = self._current_step_def()
 
-        # 커스텀 핸들러
-        if step_def.handler and step_def.handler in CUSTOM_HANDLERS:
-            return CUSTOM_HANDLERS[step_def.handler](self)
+        # 데이터 핸들러 + 렌더러 파이프라인
+        if step_def.handler and step_def.handler in DATA_HANDLERS:
+            try:
+                data = DATA_HANDLERS[step_def.handler](self)
+                self.reset()
+
+                # 렌더러로 렌더링
+                if step_def.render and step_def.render.type in RENDER_MAP:
+                    return RENDER_MAP[step_def.render.type](data, step_def.render, self.selections)
+
+                # render 미지정 → 기본 결과 표시
+                return str(data), [], "done"
+            except Exception as e:
+                self.reset()
+                return f"⚠️ 실행 중 오류: {e}", [], "error"
 
         # API 호출
         if step_def.api:
@@ -492,19 +556,18 @@ def _run_select_master(state: WizardState, step_def: StepDefinition) -> tuple[st
         state.reset()
         return "오피셜클럽을 찾을 수 없습니다. 토큰이 만료되었을 수 있습니다.", [], "error"
 
-    public_masters = [m for m in masters if m.get("publicType") == "PUBLIC"]
-    if not public_masters:
-        public_masters = masters
-    public_masters.sort(key=lambda m: m.get("name", ""))
+    masters.sort(key=lambda m: m.get("name", ""))
 
     name_map = {}
     buttons = []
-    for m in public_masters[:20]:
+    for m in masters[:30]:
         cms_id = str(m.get("cmsId", ""))
         name = m.get("name", f"클럽 {cms_id}")
+        public_type = m.get("publicType", "")
+        label = name if public_type == "PUBLIC" else f"{name} ({public_type})"
         key = f"master_{cms_id}"
         name_map[key] = name
-        buttons.append(_btn_select(name, key))
+        buttons.append(_btn_select(label, key))
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
 
     state.selections["_master_names"] = name_map
