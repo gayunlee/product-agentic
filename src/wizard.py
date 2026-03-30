@@ -100,30 +100,42 @@ def _get_api_map():
 def _handle_diagnose(state: WizardState) -> tuple[str, list[dict], str]:
     """노출 진단."""
     from src.agents.validator import diagnose_visibility
-    from src.agents.response import AgentResponse as LegacyAgentResponse, render_response
 
     master_cms_id = state.selections.get("master_cms_id", "")
     master_name = state.selections.get("master_name", "")
     state.reset()
 
     result = diagnose_visibility(master_cms_id or master_name)
-    data = {
-        "checks": [
-            {"name": c.get("label", ""), "ok": c.get("passed", False), "value": c.get("actual", "")}
-            for c in result.get("checks", [])
-        ],
-        "first_failure": result.get("first_failure"),
-        "fix_label": "해결하기" if result.get("first_failure") else None,
-        "nav_url": "/product/page/list",
-    }
-    resp_type = "diagnose" if not result.get("visible") else "info"
-    resp = LegacyAgentResponse(
-        type=resp_type,
-        summary=f"{result.get('master_name', master_name)} 노출 진단 완료. "
-                + (f"원인: {result['first_failure']}" if result.get("first_failure") else "모든 조건 정상."),
-        data=data,
-    )
-    return render_response(resp)
+    checks = result.get("checks", [])
+    first_failure = result.get("first_failure")
+    name = result.get("master_name", master_name)
+
+    # 체크리스트 렌더링
+    lines = [f"📊 노출 진단 결과"]
+    lines.append("")
+    lines.append(f"{name} 노출 진단 완료. " + (f"원인: {first_failure}" if first_failure else "모든 조건 정상."))
+    lines.append("")
+    lines.append("| 항목 | 상태 |")
+    lines.append("|------|------|")
+    first_fail_check = next((c for c in checks if not c.get("passed", False)), None)
+    for c in checks:
+        icon = "✅" if c.get("passed") else "❌"
+        label = c.get("label", c.get("condition", ""))
+        actual = c.get("actual", "")
+        suffix = " ← 원인" if c is first_fail_check else ""
+        lines.append(f"| {label} | {icon} {actual}{suffix} |")
+
+    if first_failure:
+        lines.append("")
+        lines.append("해결이 필요합니다.")
+
+    msg = "\n".join(lines)
+
+    # 위저드 종료 후에도 동작하도록 navigate 버튼만 사용
+    nav_url = "/product/page/list"
+    buttons = [_btn_navigate("설정 관리", nav_url)]
+
+    return msg, buttons, "diagnose"
 
 
 def _handle_launch_check(state: WizardState) -> tuple[str, list[dict], str]:
