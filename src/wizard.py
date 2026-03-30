@@ -31,6 +31,7 @@ from src.agents.validator import check_cascading_effects
 # 위저드 액션 정의
 WIZARD_ACTIONS = {
     "diagnose": {"label": "노출 진단", "target_type": "master"},
+    "launch_check": {"label": "런칭 체크", "target_type": "master"},
     "product_page_inactive": {"label": "상품페이지 비공개", "target_type": "product_page"},
     "product_page_active": {"label": "상품페이지 공개", "target_type": "product_page"},
     "product_hide": {"label": "상품 비공개", "target_type": "product_option"},
@@ -98,10 +99,11 @@ class WizardState:
         return "알 수 없는 스텝입니다.", [], "error"
 
     def _next_after_master(self) -> tuple[str, list[dict], str]:
-        """마스터 선택 후 — 진단이면 바로 실행, 아니면 페이지 선택."""
-        action_info = WIZARD_ACTIONS.get(self.action, {})
+        """마스터 선택 후 — 진단/런칭체크면 바로 실행, 아니면 페이지 선택."""
         if self.action == "diagnose":
             return self._execute_diagnose()
+        if self.action == "launch_check":
+            return self._execute_launch_check()
         self.step = "select_page"
         return self._step_select_page()
 
@@ -281,6 +283,61 @@ class WizardState:
             data=data,
         )
         return render_response(resp)
+
+    def _execute_launch_check(self) -> tuple[str, list[dict], str]:
+        """런칭 체크 — diagnose_visibility 결과를 런칭 준비 관점으로 렌더링."""
+        from src.agents.validator import diagnose_visibility
+
+        master_name = self.selections.get("master_name", "")
+        self.reset()
+
+        result = diagnose_visibility(master_name)
+        checks = result.get("checks", [])
+        weblink_warnings = result.get("weblink_warnings", [])
+
+        # 런칭 체크 결과 렌더링
+        total = len(checks)
+        passed = sum(1 for c in checks if c.get("passed", False))
+        all_pass = passed == total
+
+        lines = [f"## 🚀 런칭 체크 — {result.get('master_name', master_name)}"]
+        lines.append("")
+        lines.append(f"**{passed}/{total} 항목 통과**")
+        lines.append("")
+
+        # 체크리스트
+        for c in checks:
+            icon = "✅" if c.get("passed") else "❌"
+            label = c.get("label", c.get("condition", ""))
+            actual = c.get("actual", "")
+            lines.append(f"{icon} **{label}** — {actual}")
+
+        # 웹링크 경고
+        if weblink_warnings:
+            lines.append("")
+            for w in weblink_warnings:
+                lines.append(f"⚠️ {w}")
+
+        # 결론
+        lines.append("")
+        if all_pass:
+            lines.append("**런칭 준비 완료!** 모든 조건이 정상입니다.")
+        else:
+            first_fail = result.get("first_failure", "")
+            lines.append(f"**런칭 불가** — {first_fail}")
+            lines.append("위 항목을 해결한 후 다시 체크해주세요.")
+
+        msg = "\n".join(lines)
+
+        # 버튼: 실패 항목이 있으면 해결 버튼, 성공이면 설정 확인
+        buttons = []
+        if not all_pass:
+            buttons.append(_btn_action("해결하기"))
+            buttons.append(_btn_navigate("설정 관리", "/product/page/list"))
+        else:
+            buttons.append(_btn_navigate("설정 확인", "/product/page/list"))
+
+        return msg, buttons, "launch_check"
 
     def _call_api(self) -> dict:
         """액션에 따라 적절한 API 호출."""
