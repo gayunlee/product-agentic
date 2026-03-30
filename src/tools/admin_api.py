@@ -49,13 +49,20 @@ def _get_mock(tool_name: str, **kwargs) -> dict | list:
 
     # 검색어 기반 분기 (마스터 검색)
     keyword = kwargs.get("keyword", "")
-    if tool_name == "search_masters" and keyword:
+    if tool_name == "search_masters":
+        if not keyword:
+            # 키워드 없으면 전체 목록 (위저드용)
+            return {"masters": [
+                {"id": "mock_001", "cmsId": "35", "name": "조조형우", "publicType": "PUBLIC"},
+                {"id": "mock_002", "cmsId": "100", "name": "김영익", "publicType": "PUBLIC"},
+                {"id": "mock_003", "cmsId": "42", "name": "봄날의 햇살", "publicType": "PUBLIC"},
+            ]}
         if "조조형우" in keyword:
             return MOCK_RESPONSES["search_masters"]
         elif "김영익" in keyword:
-            return [{"id": "mock_kim_001", "cmsId": "100", "name": "김영익", "createdAt": "2023-11-21", "publicType": "PUBLIC", "masterGroupId": "mock_group_kim", "masterGroupName": "김영익"}]
+            return {"masters": [{"id": "mock_kim_001", "cmsId": "100", "name": "김영익", "createdAt": "2023-11-21", "publicType": "PUBLIC", "masterGroupId": "mock_group_kim", "masterGroupName": "김영익"}]}
         else:
-            return []  # 그 외 → 빈 결과 (마스터 없음)
+            return {"masters": []}  # 그 외 → 빈 결과 (마스터 없음)
     if tool_name == "get_master_groups" and keyword:
         if "조조형우" in keyword:
             return MOCK_RESPONSES["get_master_groups"]

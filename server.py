@@ -57,6 +57,7 @@ from pydantic import BaseModel
 from src.agents import create_agent_system, AgentSystem
 from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
 from src.vector_router import VectorRouter
+from src.wizard import WizardState, create_wizard, WIZARD_ACTIONS
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
 
@@ -68,9 +69,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 시스템 + Memory 관리
+# 세션별 에이전트 시스템 + Memory + Wizard 관리
 _sessions: dict[str, AgentSystem] = {}
 _memories: dict[str, AgentMemory | None] = {}
+_wizards: dict[str, WizardState | None] = {}
 _vector_router = VectorRouter()
 _DEFAULT_SESSION = "default"
 
@@ -96,7 +98,9 @@ def _get_system(session_id: str = _DEFAULT_SESSION, memory_context: str = "") ->
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
+    button: dict | None = None  # 위저드 버튼 입력: {type, value?, action?}
+    wizard_action: str | None = None  # 위저드 시작: "product_page_inactive" 등
     session_id: str | None = None
     context: dict | None = None  # { currentPath, role, permissions, masterId?, productPageId?, token? }
 
@@ -321,6 +325,35 @@ async def chat(req: ChatRequest):
     try:
         _inject_token(req.context)
         session_id = req.session_id or _DEFAULT_SESSION
+
+        # 1. 위저드 시작 요청
+        if req.wizard_action:
+            print(f"🧙 위저드 시작: {req.wizard_action}")
+            wizard = create_wizard(req.wizard_action)
+            _wizards[session_id] = wizard
+            msg, buttons, mode = wizard.start()
+            return ChatResponse(message=msg, buttons=buttons, mode=mode)
+
+        # 2. 위저드 버튼 입력
+        if req.button:
+            wizard = _wizards.get(session_id)
+            if wizard and wizard.is_active():
+                print(f"🧙 위저드 버튼: {req.button}")
+                msg, buttons, mode = wizard.handle(req.button)
+                if not wizard.is_active():
+                    _wizards.pop(session_id, None)
+                return ChatResponse(message=msg, buttons=buttons, mode=mode)
+
+        # 3. 위저드 진행 중 자연어 입력 → 위저드 보호
+        wizard = _wizards.get(session_id)
+        if wizard and wizard.is_active() and req.message:
+            return ChatResponse(
+                message="진행 중인 작업이 있어요. 계속하시려면 버튼을 눌러주세요.",
+                buttons=[{"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"}],
+                mode="wizard",
+            )
+
+        # 4. 일반 채팅
         return _handle_message(req.message.strip(), session_id, req.context)
     except Exception as e:
         import traceback
@@ -389,11 +422,18 @@ async def chat_stream(req: ChatRequest):
     )
 
 
+@app.get("/wizard/actions")
+async def wizard_actions():
+    """사용 가능한 위저드 액션 목록."""
+    return [{"action": k, **v} for k, v in WIZARD_ACTIONS.items()]
+
+
 @app.post("/reset")
 async def reset():
-    global _sessions, _memories
+    global _sessions, _memories, _wizards
     _sessions.clear()
     _memories.clear()
+    _wizards.clear()
     print("🔄 세션 초기화 완료")
     return {"status": "ok"}
 
