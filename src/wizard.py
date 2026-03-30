@@ -24,19 +24,14 @@ from src.tools.admin_api import (
     update_product_display,
     update_product_page_status,
     update_product_page,
+    resolve_page_url,
 )
 from src.agents.validator import check_cascading_effects
 
 
-# 위저드 액션 정의
+# 위저드 액션 정의 — 프론트에 노출할 것만
 WIZARD_ACTIONS = {
-    "diagnose": {"label": "노출 진단", "target_type": "master"},
     "launch_check": {"label": "런칭 체크", "target_type": "master"},
-    "product_page_inactive": {"label": "상품페이지 비공개", "target_type": "product_page"},
-    "product_page_active": {"label": "상품페이지 공개", "target_type": "product_page"},
-    "product_hide": {"label": "상품 비공개", "target_type": "product_option"},
-    "product_show": {"label": "상품 공개", "target_type": "product_option"},
-    "hidden": {"label": "히든 처리", "target_type": "product_page"},
 }
 
 
@@ -80,6 +75,19 @@ class WizardState:
         self.step = "select_master"
         return self._step_select_master()
 
+    def start_with_master(self, master_id: str) -> tuple[str, list[dict], str]:
+        """context에서 masterId가 있을 때 — 클럽 선택 건너뛰기."""
+        from src.tools.admin_api import get_master_detail
+        try:
+            detail = get_master_detail(master_id=master_id)
+            master_name = detail.get("name", f"클럽 {master_id}")
+        except Exception:
+            master_name = f"클럽 {master_id}"
+
+        self.selections["master_cms_id"] = master_id
+        self.selections["master_name"] = master_name
+        return self._next_after_master()
+
     def _handle_select(self, value: str) -> tuple[str, list[dict], str]:
         if self.step == "select_master":
             self.selections["master_cms_id"] = value.replace("master_", "")
@@ -118,30 +126,38 @@ class WizardState:
     # ── 각 스텝 구현 ──
 
     def _step_select_master(self) -> tuple[str, list[dict], str]:
-        """클럽 선택 스텝."""
+        """클럽 선택 스텝 — 전체 목록을 버튼으로 표시."""
+        action_label = WIZARD_ACTIONS.get(self.action, {}).get("label", self.action)
+
         try:
             result = search_masters(search_keyword="")
-            masters = result.get("masters", [])
+            masters = result.get("masters", []) if isinstance(result, dict) else result if isinstance(result, list) else []
         except Exception:
             masters = []
 
         if not masters:
             self.reset()
-            return "오피셜클럽을 찾을 수 없습니다.", [], "error"
+            return "오피셜클럽을 찾을 수 없습니다. 토큰이 만료되었을 수 있습니다.", [], "error"
+
+        # PUBLIC 클럽만 필터 + 이름순 정렬, 최대 20개
+        public_masters = [m for m in masters if m.get("publicType") == "PUBLIC"]
+        if not public_masters:
+            public_masters = masters
+        public_masters.sort(key=lambda m: m.get("name", ""))
 
         name_map = {}
         buttons = []
-        for m in masters[:10]:
+        for m in public_masters[:20]:
             cms_id = str(m.get("cmsId", ""))
             name = m.get("name", f"클럽 {cms_id}")
             key = f"master_{cms_id}"
             name_map[key] = name
             buttons.append(_btn_select(name, key))
-        buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
+        buttons.append({"type": "action", "label": "처음으로", "action": "cancel", "variant": "ghost"})
 
         self.selections["_master_names"] = name_map
+        self.step = "select_master"
 
-        action_label = WIZARD_ACTIONS.get(self.action, {}).get("label", self.action)
         return f"**{action_label}** — 오피셜클럽을 선택하세요.", buttons, "wizard"
 
     def _step_select_page(self) -> tuple[str, list[dict], str]:
@@ -262,10 +278,12 @@ class WizardState:
         from src.agents.validator import diagnose_visibility
         from src.agents.response import AgentResponse, render_response
 
+        master_cms_id = self.selections.get("master_cms_id", "")
         master_name = self.selections.get("master_name", "")
         self.reset()
 
-        result = diagnose_visibility(master_name)
+        # cmsId로 직접 호출 (이름 재검색 방지)
+        result = diagnose_visibility(master_cms_id or master_name)
         data = {
             "checks": [
                 {"name": c.get("label", ""), "ok": c.get("passed", False), "value": c.get("actual", "")}
@@ -288,10 +306,12 @@ class WizardState:
         """런칭 체크 — diagnose_visibility 결과를 런칭 준비 관점으로 렌더링."""
         from src.agents.validator import diagnose_visibility
 
+        master_cms_id = self.selections.get("master_cms_id", "")
         master_name = self.selections.get("master_name", "")
         self.reset()
 
-        result = diagnose_visibility(master_name)
+        # cmsId로 직접 호출 (이름 재검색 방지)
+        result = diagnose_visibility(master_cms_id or master_name)
         checks = result.get("checks", [])
         weblink_warnings = result.get("weblink_warnings", [])
 
@@ -312,6 +332,22 @@ class WizardState:
             actual = c.get("actual", "")
             lines.append(f"{icon} **{label}** — {actual}")
 
+        # 공개 중인 상품페이지 + 상품 정보
+        page_check = next((c for c in checks if c.get("condition") == "page_active"), None)
+        active_pages = page_check.get("pages", []) if page_check else []
+        if active_pages:
+            lines.append("")
+            lines.append("### 공개 중인 상품페이지")
+            for p in active_pages:
+                hidden_tag = " (히든)" if p.get("is_hidden") else ""
+                lines.append(f"- **{p.get('title', '제목 없음')}**{hidden_tag}")
+                options = p.get("options", [])
+                for opt in options:
+                    display = "공개" if opt.get("is_display") else "비공개"
+                    price = opt.get("price", 0)
+                    price_str = f"{price:,}원" if isinstance(price, (int, float)) and price > 0 else ""
+                    lines.append(f"  - {opt.get('name', '')} ({display}) {price_str}".rstrip())
+
         # 웹링크 경고
         if weblink_warnings:
             lines.append("")
@@ -329,13 +365,48 @@ class WizardState:
 
         msg = "\n".join(lines)
 
-        # 버튼: 실패 항목이 있으면 해결 버튼, 성공이면 설정 확인
+        # 버튼: 공개 페이지 → 상세, 실패 항목 → 설정 페이지
+        # resolve_page_url로 URL 상수 관리
         buttons = []
+
+        # 공개 중인 상품페이지 링크
+        for p in active_pages:
+            page_id = p.get("page_id", "")
+            title = p.get("title", "페이지")
+            if page_id:
+                url, _ = resolve_page_url("product_page_detail", id=page_id)
+                buttons.append(_btn_navigate(f"📄 {title}", url))
+
+        # 실패 항목별 매핑: condition → (page_key, params)
+        FAIL_PAGE_MAP = {
+            "master_public": ("official_club", {"masterId": master_cms_id}),
+            "main_product_active": ("main_product", {}),
+            "page_active": ("product_page_list", {}),
+            "weblink_set": ("official_club", {"masterId": master_cms_id}),
+            "weblink_target_valid": ("official_club", {"masterId": master_cms_id}),
+            "weblink_target_stable": ("official_club", {"masterId": master_cms_id}),
+        }
+
         if not all_pass:
-            buttons.append(_btn_action("해결하기"))
-            buttons.append(_btn_navigate("설정 관리", "/product/page/list"))
-        else:
-            buttons.append(_btn_navigate("설정 확인", "/product/page/list"))
+            for c in checks:
+                if c.get("passed"):
+                    continue
+                condition = c.get("condition", "")
+                mapping = FAIL_PAGE_MAP.get(condition)
+                if mapping:
+                    page_key, params = mapping
+                    url, label = resolve_page_url(page_key, **params)
+                    buttons.append(_btn_navigate(label, url))
+
+        # 중복 제거
+        seen = set()
+        unique_buttons = []
+        for b in buttons:
+            key = b.get("url", "")
+            if key not in seen:
+                seen.add(key)
+                unique_buttons.append(b)
+        buttons = unique_buttons
 
         return msg, buttons, "launch_check"
 

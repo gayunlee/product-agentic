@@ -328,10 +328,14 @@ async def chat(req: ChatRequest):
 
         # 1. 위저드 시작 요청
         if req.wizard_action:
-            print(f"🧙 위저드 시작: {req.wizard_action}")
+            master_id = (req.context or {}).get("masterId")
+            print(f"🧙 위저드 시작: {req.wizard_action} (masterId={master_id})")
             wizard = create_wizard(req.wizard_action)
             _wizards[session_id] = wizard
-            msg, buttons, mode = wizard.start()
+            if master_id:
+                msg, buttons, mode = wizard.start_with_master(master_id)
+            else:
+                msg, buttons, mode = wizard.start()
             return ChatResponse(message=msg, buttons=buttons, mode=mode)
 
         # 2. 위저드 버튼 입력
@@ -343,10 +347,18 @@ async def chat(req: ChatRequest):
                 if not wizard.is_active():
                     _wizards.pop(session_id, None)
                 return ChatResponse(message=msg, buttons=buttons, mode=mode)
+            # 위저드 종료 후 버튼 클릭 → 무시
+            return ChatResponse(message="이전 작업이 완료되었습니다. 새 작업을 시작해주세요.", buttons=[], mode="idle")
 
-        # 3. 위저드 진행 중 자연어 입력 → 위저드 보호
+        # 3. 위저드 진행 중 자연어 입력
         wizard = _wizards.get(session_id)
         if wizard and wizard.is_active() and req.message:
+            # input_master 스텝이면 검색어로 처리
+            if wizard.step == "input_master":
+                print(f"🧙 위저드 검색: {req.message}")
+                msg, buttons, mode = wizard._step_select_master(search_keyword=req.message.strip())
+                return ChatResponse(message=msg, buttons=buttons, mode=mode)
+            # 그 외 스텝이면 위저드 보호
             return ChatResponse(
                 message="진행 중인 작업이 있어요. 계속하시려면 버튼을 눌러주세요.",
                 buttons=[{"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"}],
