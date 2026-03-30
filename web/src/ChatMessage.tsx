@@ -1,6 +1,9 @@
+import { marked } from 'marked'
 import type { ChatMessage as ChatMessageData, AgentButton } from './types'
 import { ActionButton } from './ActionButton'
 import { StepIndicator } from './StepIndicator'
+
+marked.setOptions({ breaks: true })
 
 interface ChatMessageProps {
   message: ChatMessageData
@@ -40,6 +43,7 @@ export function ChatMessage({ message, isLatest, onClickButton, onNavigate }: Ch
 
       {/* 메시지 본문 */}
       <div
+        className="agent-message"
         style={{
           padding: '12px 16px',
           borderRadius: '12px',
@@ -51,7 +55,6 @@ export function ChatMessage({ message, isLatest, onClickButton, onNavigate }: Ch
           borderLeft: borderColor ? `3px solid ${borderColor}` : undefined,
           fontSize: '14px',
           lineHeight: '1.6',
-          whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
         }}
         dangerouslySetInnerHTML={
@@ -79,13 +82,6 @@ export function ChatMessage({ message, isLatest, onClickButton, onNavigate }: Ch
   )
 }
 
-/** 간단한 마크다운 렌더링 (bold, 줄바꿈, 링크 정도) */
 function renderMarkdown(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br/>')
-    .replace(/https?:\/\/[^\s)]+/g, (url) => `<a href="${url}" target="_blank" style="color:#0066cc">${url}</a>`)
+  return marked.parse(text) as string
 }
