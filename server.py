@@ -58,6 +58,7 @@ from src.agents import create_agent_system, AgentSystem
 from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
 from src.vector_router import VectorRouter
 from src.wizard import WizardState, create_wizard, WIZARD_ACTIONS
+from src.context import SessionManager
 from schema.types import build_response, build_error_response, AgentResponse as AgentResponseSchema
 
 app = FastAPI(title="상품 세팅 에이전트 (멀티 에이전트)")
@@ -70,32 +71,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 세션별 에이전트 시스템 + Memory + Wizard 관리
-_sessions: dict[str, AgentSystem] = {}
-_memories: dict[str, AgentMemory | None] = {}
-_wizards: dict[str, WizardState | None] = {}
+# 세션 관리 — 단일 매니저로 통합
+_sm = SessionManager()
 _vector_router = VectorRouter()
 _DEFAULT_SESSION = "default"
 
 
 def _get_memory(session_id: str = _DEFAULT_SESSION) -> AgentMemory | None:
-    if session_id not in _memories:
-        _memories[session_id] = create_memory_session(session_id)
-    return _memories[session_id]
+    return _sm.get_or_create_memory(session_id, create_memory_session)
 
 
 def _get_system(session_id: str = _DEFAULT_SESSION, memory_context: str = "") -> AgentSystem:
-    if session_id not in _sessions:
-        _sessions[session_id] = create_agent_system(memory_context=memory_context)
-    else:
-        # 기존 시스템 유지 (Agent 대화 히스토리 보존), memory_context만 갱신
-        system = _sessions[session_id]
-        if memory_context:
-            from src.agents.orchestrator import ORCHESTRATOR_PROMPT
-            system.orchestrator.system_prompt = ORCHESTRATOR_PROMPT
-            if memory_context:
-                system.orchestrator.system_prompt += f"\n## 관련 이력 (Memory)\n{memory_context}\n"
-    return _sessions[session_id]
+    return _sm.get_or_create_system(session_id, create_agent_system, memory_context)
 
 
 _MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
@@ -335,37 +322,36 @@ async def chat(req: ChatRequest):
         _inject_token(req.context)
         session_id = req.session_id or _DEFAULT_SESSION
 
+        ctx = _sm.get(session_id)
+
         # 1. 위저드 시작 요청
         if req.wizard_action:
             master_id = (req.context or {}).get("masterId")
             print(f"🧙 위저드 시작: {req.wizard_action} (masterId={master_id})")
-            wizard = create_wizard(req.wizard_action)
-            _wizards[session_id] = wizard
+            ctx.wizard = create_wizard(req.wizard_action)
             if master_id:
-                msg, buttons, mode = wizard.start_with_master(master_id)
+                msg, buttons, mode = ctx.wizard.start_with_master(master_id)
             else:
-                msg, buttons, mode = wizard.start()
+                msg, buttons, mode = ctx.wizard.start()
             return _to_response(msg, buttons, mode)
 
         # 2. 위저드 버튼 입력
         if req.button:
-            wizard = _wizards.get(session_id)
-            if wizard and wizard.is_active():
+            if ctx.wizard and ctx.wizard.is_active():
                 print(f"🧙 위저드 버튼: {req.button}")
-                msg, buttons, mode = wizard.handle(req.button)
-                if not wizard.is_active():
-                    _wizards.pop(session_id, None)
+                msg, buttons, mode = ctx.wizard.handle(req.button)
+                if not ctx.wizard.is_active():
+                    ctx.wizard = None
                 return _to_response(msg, buttons, mode)
             # 위저드 종료 후 버튼 클릭 → 무시
             return _to_response("이전 작업이 완료되었습니다. 새 작업을 시작해주세요.")
 
         # 3. 위저드 진행 중 자연어 입력
-        wizard = _wizards.get(session_id)
-        if wizard and wizard.is_active() and req.message:
+        if ctx.wizard and ctx.wizard.is_active() and req.message:
             # input_master 스텝이면 검색어로 처리
-            if wizard.step == "input_master":
+            if ctx.wizard.step == "input_master":
                 print(f"🧙 위저드 검색: {req.message}")
-                msg, buttons, mode = wizard._step_select_master(search_keyword=req.message.strip())
+                msg, buttons, mode = ctx.wizard._step_select_master(search_keyword=req.message.strip())
                 return _to_response(msg, buttons, mode)
             # 그 외 스텝이면 위저드 보호
             return _to_response(
@@ -454,10 +440,7 @@ async def wizard_actions():
 
 @app.post("/reset")
 async def reset():
-    global _sessions, _memories, _wizards
-    _sessions.clear()
-    _memories.clear()
-    _wizards.clear()
+    _sm.clear_all()
     print("🔄 세션 초기화 완료")
     return {"status": "ok"}
 
