@@ -22,6 +22,10 @@ class ChatMode(str, Enum):
     WIZARD = "wizard"
     LAUNCH_CHECK = "launch_check"
     SELECT = "select"
+    SLOT_QUESTION = "slot_question"
+    CONFIRM = "confirm"
+    INFO = "info"
+    DOMAIN = "domain"
     ERROR = "error"
     REJECT = "reject"
 
@@ -40,6 +44,7 @@ class AgentButton(BaseModel):
     value: str | None = None       # select
     action: str | None = None      # action
     url: str | None = None         # navigate
+    payload: dict | None = None    # execute_confirmed용 (action_id, slots)
 
     # 동작 제어
     clickable: ButtonClickable = "once"
