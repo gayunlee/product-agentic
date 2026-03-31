@@ -77,6 +77,19 @@ EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트
 """
 
 
+# request_action 호출 시 harness 응답을 저장하는 사이드채널.
+# executor LLM이 응답을 해석/요약하더라도, orchestrator가 원본을 가져갈 수 있다.
+_last_harness_response: str | None = None
+
+
+def get_last_harness_response() -> str | None:
+    """마지막 request_action 호출의 harness 응답을 꺼내고 초기화."""
+    global _last_harness_response
+    resp = _last_harness_response
+    _last_harness_response = None
+    return resp
+
+
 @strands_tool
 def request_action(action_id: str, slots: dict) -> str:
     """상태 변경 요청. 유일한 쓰기 경로.
@@ -99,9 +112,12 @@ def request_action(action_id: str, slots: dict) -> str:
     Returns:
         확인 메시지 (JSON). 유저에게 그대로 전달하세요.
     """
+    global _last_harness_response
     from src.harness import get_harness
     harness = get_harness()
-    return harness.validate_and_confirm(action_id, slots)
+    result = harness.validate_and_confirm(action_id, slots)
+    _last_harness_response = result  # 사이드채널 저장
+    return result
 
 
 @strands_tool

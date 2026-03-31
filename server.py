@@ -244,10 +244,19 @@ def _try_parse_agent_response(text: str) -> dict | None:
 
 
 def _call_executor_direct(message: str, system: AgentSystem) -> tuple[str, list, str]:
-    """오케스트레이터 없이 executor 직접 호출 → structured_output → 렌더링."""
+    """오케스트레이터 없이 executor 직접 호출."""
     from src.agents.response import ExecutorOutput, AgentResponse, render_response
+    from src.agents.executor import get_last_harness_response
 
     system.executor(message)
+
+    # request_action이 호출되었으면 harness 원본 응답을 직접 반환
+    harness_resp = get_last_harness_response()
+    if harness_resp:
+        parsed = json.loads(harness_resp)
+        return parsed.get("message", ""), parsed.get("buttons", []), parsed.get("mode", "execute")
+
+    # harness 미경유 → 기존 경로 (structured_output 또는 텍스트)
     try:
         output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
         resp = AgentResponse.from_executor_output(output)
@@ -325,6 +334,8 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
             msg = "죄송합니다, 상품 세팅 관련 요청만 도와드릴 수 있습니다."
             buttons, mode = [], "reject"
 
+        # harness 사이드채널 체크 (LLM이 구조화 응답을 요약했을 때 원본 복원)
+        msg, buttons, mode = _check_harness_override(msg, buttons, mode)
         save_turn(mem, "assistant", msg[:500])
         _store_diagnose_resolves(session_id, mode, msg, buttons)
         print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
@@ -346,12 +357,37 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
         buttons = []
         mode = _detect_mode(result_text)
 
+    # harness 사이드채널 체크
+    msg, buttons, mode = _check_harness_override(msg, buttons, mode)
+
     # 5. Memory에 어시스턴트 응답 저장
     save_turn(mem, "assistant", msg[:500])
     _store_diagnose_resolves(session_id, mode, msg, buttons)
 
     print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
     return _to_response(msg, buttons, mode)
+
+
+def _check_harness_override(msg: str, buttons: list, mode: str) -> tuple[str, list, str]:
+    """request_action이 호출되었으면 harness 원본 응답으로 교체.
+
+    LLM(executor/orchestrator)이 harness의 구조화 응답을 요약해서
+    buttons/mode가 사라지는 문제를 해결.
+    """
+    from src.agents.executor import get_last_harness_response
+    harness_resp = get_last_harness_response()
+    if harness_resp:
+        try:
+            parsed = json.loads(harness_resp)
+            print(f"📎 harness 응답 복원: mode={parsed.get('mode')}")
+            return (
+                parsed.get("message", msg),
+                parsed.get("buttons", []),
+                parsed.get("mode", "execute"),
+            )
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return msg, buttons, mode
 
 
 def _store_diagnose_resolves(session_id: str, mode: str, msg: str, buttons: list):

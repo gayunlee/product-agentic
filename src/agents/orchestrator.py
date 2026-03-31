@@ -188,7 +188,14 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         Args:
             request: 실행 요청 (예: "조조형우 상품페이지 비공개해줘")
         """
-        return _extract_result(executor(request))
+        result_text = _extract_result(executor(request))
+        # request_action이 호출되었으면 harness 원본 응답을 직접 반환
+        # (executor LLM이 해석/요약하더라도 원본 보존)
+        from src.agents.executor import get_last_harness_response
+        harness_resp = get_last_harness_response()
+        if harness_resp:
+            return harness_resp
+        return result_text
 
     @strands_tool
     def guide(page_type: str) -> str:
