@@ -1,0 +1,111 @@
+# 노출 사전조건 체인 — Single Source of Truth
+#
+# 진단(DiagnoseEngine), 사전조건 체크(ActionHarness), 지식 설명(KnowledgeHandler)이
+# 전부 이 파일을 참조한다. 규칙 변경 시 이 파일만 수정.
+#
+# check 표현식 DSL:
+#   field.path == 'VALUE'   — 필드 값 비교
+#   field.path != 'VALUE'   — 필드 값 불일치
+#   field.path == true/false — 불리언 비교
+#   condition1 AND condition2 — 복합 조건
+
+chains:
+  official_club:
+    label: "오피셜클럽 노출"
+    description: "구독 탭, 마스터 추천 탭에서 보이려면"
+    requires:
+      - id: R8
+        check: "master.clubPublicType == 'PUBLIC'"
+        fail_message: "오피셜클럽이 {master.clubPublicType} 상태입니다"
+        api: get_master_detail
+        api_params:
+          master_id: "{master_cms_id}"
+        notes:
+          - "PRIVATE이어도 URL 직접 접근은 가능 (의도적)"
+          - "PRIVATE 전환 시 피드에서도 사라짐"
+
+  subscribe_tab_card:
+    label: "구독탭 카드 노출"
+    description: "구독 탭에서 카드가 보이고 버튼이 활성화되려면"
+    requires:
+      - id: R8
+        check: "master.clubPublicType == 'PUBLIC'"
+        fail_message: "오피셜클럽이 {master.clubPublicType} 상태입니다"
+        api: get_master_detail
+        api_params:
+          master_id: "{master_cms_id}"
+      - id: R0
+        check: "mainProduct.productGroupViewStatus == 'ACTIVE'"
+        fail_message: "메인 상품페이지가 {mainProduct.productGroupViewStatus} 상태입니다"
+        api: get_main_product
+        api_params:
+          master_id: "{master_cms_id}"
+        cascading_notes:
+          - "구독 탭에서 카드 자체가 사라짐"
+          - "클럽 페이지 멤버십 배너도 사라짐"
+          - "클럽 페이지 접근 자체는 가능 (콘텐츠만)"
+
+  product_page_accessible:
+    label: "상품페이지 접근"
+    description: "상품페이지 URL로 접근 가능하려면"
+    requires:
+      - id: R1
+        check: "page.status == 'ACTIVE'"
+        fail_message: "상품페이지가 비공개(INACTIVE) 상태입니다"
+        api: get_product_page_detail
+        api_params:
+          product_page_id: "{page_id}"
+    notes:
+      - "히든(isHidden)이면 URL 접근은 가능하지만 목록에서 안 보임"
+
+  product_visible:
+    label: "상품 노출"
+    description: "유저가 상품을 보고 구매할 수 있으려면"
+    requires:
+      - id: R8
+        check: "master.clubPublicType == 'PUBLIC'"
+        fail_message: "오피셜클럽이 {master.clubPublicType} 상태입니다"
+        api: get_master_detail
+        api_params:
+          master_id: "{master_cms_id}"
+      - id: R0
+        check: "mainProduct.productGroupViewStatus == 'ACTIVE'"
+        fail_message: "메인 상품페이지가 {mainProduct.productGroupViewStatus} 상태입니다"
+        api: get_main_product
+        api_params:
+          master_id: "{master_cms_id}"
+      - id: R1
+        check: "page.status == 'ACTIVE'"
+        fail_message: "상품페이지가 비공개(INACTIVE) 상태입니다"
+        api: get_product_page_detail
+        api_params:
+          product_page_id: "{page_id}"
+      - id: R3
+        check: "page.isInPeriod == true"
+        fail_message: "노출 기간이 아닙니다"
+        api: get_product_page_detail
+        api_params:
+          product_page_id: "{page_id}"
+      - id: R5
+        check: "product.isDisplay == true"
+        fail_message: "상품이 비공개 상태입니다"
+        api: get_product_detail
+        api_params:
+          product_id: "{product_id}"
+
+  weblink:
+    label: "구독탭 웹링크"
+    description: "구독탭에서 웹링크 버튼이 동작하려면"
+    requires:
+      - id: R6
+        check: "mainProduct.isProductGroupWebLinkStatus == 'ACTIVE'"
+        fail_message: "웹링크가 비활성 상태입니다"
+        api: get_main_product
+        api_params:
+          master_id: "{master_cms_id}"
+      - id: R6_target
+        check: "weblinkTarget.status == 'ACTIVE'"
+        fail_message: "웹링크가 비공개 페이지를 가리킵니다"
+        api: get_weblink_target
+        api_params:
+          master_id: "{master_cms_id}"

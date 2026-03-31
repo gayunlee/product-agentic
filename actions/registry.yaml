@@ -1,0 +1,172 @@
+# 액션 레지스트리 — 에이전트가 실행할 수 있는 모든 상태 변경 액션
+#
+# Executor LLM은 request_action(action_id, slots) 하나만 호출.
+# ActionHarness가 이 파일을 읽어 자동으로:
+#   1. required_slots 검증
+#   2. visibility_chain 체크
+#   3. prerequisites 체크
+#   4. cascading 경고 수집
+#   5. confirmation 생성 → 유저 확인
+#   6. API 실행
+#   7. post_action 검증
+
+actions:
+  update_product_display:
+    label: "상품 공개/비공개"
+    category: mutate
+    required_slots:
+      - product_id
+      - is_display
+    resolved_slots:
+      - master_cms_id
+      - page_id
+      - product_name
+      - page_title
+      - master_name
+    visibility_chain: product_visible
+    prerequisites:
+      - check: "product.exists == true"
+        fail: "상품을 찾을 수 없습니다"
+      - check: "product.isDisplay != {is_display}"
+        fail: "이미 {display_status} 상태입니다"
+    cascading:
+      - condition: "is_display == false AND page.displayedProductCount == 1"
+        severity: warning
+        message: "이 상품이 마지막 공개 상품입니다. 비공개 처리하면 상품페이지에 상품이 0개가 됩니다."
+        suggest_action: update_product_page_status
+        suggest_params:
+          product_page_id: "{page_id}"
+          status: "INACTIVE"
+        suggest_label: "상품페이지도 비공개 처리"
+    confirmation:
+      template: |
+        **{label}**
+        대상: {master_name} > {page_title} > {product_name}
+        변경: {from_state} → {to_state}
+      require: true
+    api:
+      function: update_product_display
+      params:
+        product_id: "{product_id}"
+        is_display: "{is_display}"
+    post_action:
+      verify:
+        api: get_product_list_by_page
+        params:
+          product_page_id: "{page_id}"
+        check: "product.isDisplay == {is_display}"
+        fail: "변경이 반영되지 않았습니다."
+      navigate:
+        url: "/product/page/{page_id}?tab=options"
+        label: "결과 확인"
+
+  update_product_page_status:
+    label: "상품페이지 공개/비공개"
+    category: mutate
+    required_slots:
+      - page_id
+      - status
+    resolved_slots:
+      - master_cms_id
+      - page_title
+      - master_name
+    visibility_chain: product_page_accessible
+    prerequisites:
+      - check: "page.exists == true"
+        fail: "상품페이지를 찾을 수 없습니다"
+      - check: "page.status != {status}"
+        fail: "이미 {status} 상태입니다"
+    cascading:
+      - condition: "status == 'INACTIVE' AND master.activePageCount == 1"
+        severity: warning
+        message: "마지막 공개 상품페이지입니다. 비공개 처리하면 메인 상품페이지 버튼 클릭 시 404가 발생합니다."
+        suggest_action: update_main_product_setting
+        suggest_params:
+          master_id: "{master_cms_id}"
+          view_status: "EXCLUDED"
+        suggest_label: "메인도 EXCLUDED 처리"
+    confirmation:
+      template: |
+        **{label}**
+        대상: {master_name} > {page_title}
+        변경: {from_status} → {status}
+      require: true
+    api:
+      function: update_product_page_status
+      params:
+        product_page_id: "{page_id}"
+        status: "{status}"
+    post_action:
+      verify:
+        api: get_product_page_list
+        params:
+          master_id: "{master_cms_id}"
+        check: "page.status == {status}"
+        fail: "변경이 반영되지 않았습니다."
+      navigate:
+        url: "/product/page/{page_id}"
+        label: "결과 확인"
+
+  update_product_page_hidden:
+    label: "히든 처리/해제"
+    category: mutate
+    required_slots:
+      - page_id
+      - is_hidden
+    resolved_slots:
+      - master_cms_id
+      - page_title
+      - master_name
+    prerequisites:
+      - check: "page.status == 'ACTIVE'"
+        fail: "비공개 상태의 페이지는 히든 설정을 변경할 수 없습니다"
+      - check: "page.isHidden != {is_hidden}"
+        fail: "이미 {hidden_status} 상태입니다"
+    cascading:
+      - condition: "is_hidden == false AND page.hasDateConflict == true"
+        severity: warning
+        message: "히든 해제 시 다른 날짜지정 페이지와 충돌할 수 있습니다."
+    confirmation:
+      template: |
+        **{label}**
+        대상: {master_name} > {page_title}
+        변경: {from_hidden} → {to_hidden}
+      require: true
+    api:
+      function: update_product_page
+      params:
+        product_page_id: "{page_id}"
+        updates:
+          isHidden: "{is_hidden}"
+    post_action:
+      navigate:
+        url: "/product/page/{page_id}?tab=settings"
+        label: "결과 확인"
+
+  update_main_product_setting:
+    label: "메인 상품페이지 설정"
+    category: mutate
+    required_slots:
+      - master_cms_id
+      - view_status
+    resolved_slots:
+      - master_name
+    visibility_chain: subscribe_tab_card
+    prerequisites:
+      - check: "mainProduct.exists == true"
+        fail: "메인 상품페이지 설정이 없습니다"
+    confirmation:
+      template: |
+        **{label}**
+        대상: {master_name}
+        변경: {from_status} → {view_status}
+      require: true
+    api:
+      function: update_main_product_setting
+      params:
+        master_id: "{master_cms_id}"
+        view_status: "{view_status}"
+    post_action:
+      navigate:
+        url: "/product/page/list"
+        label: "결과 확인"

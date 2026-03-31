@@ -1,0 +1,63 @@
+# 런칭 체크 — 오피셜클럽이 고객에게 정상 노출되려면 필요한 모든 조건
+#
+# mode: checklist — 계층이 아닌 독립 체크리스트 (모두 검사, 첫 실패에서 중단 안 함)
+
+id: launch_check
+label: 런칭 체크
+mode: checklist
+
+checks:
+  - id: LC1
+    label: 마스터 그룹
+    check: "masterGroup.exists == true"
+    fail_message: "마스터 그룹이 없습니다"
+    resolve:
+      type: navigate
+      url: "/master"
+
+  - id: LC2
+    label: 오피셜클럽
+    check: "master.clubPublicType == 'PUBLIC'"
+    fail_message: "오피셜클럽이 없거나 {master.clubPublicType} 상태입니다"
+    resolve:
+      type: navigate
+      url: "/official-club/{master_cms_id}"
+
+  - id: LC3
+    label: 시리즈
+    check: "series.count > 0"
+    fail_message: "시리즈가 없습니다"
+    resolve:
+      type: navigate
+      url: "https://master.us-insight.com"
+
+  - id: LC4
+    label: 상품페이지
+    check: "pages.hasActive == true"
+    fail_message: "공개 상품페이지가 없습니다"
+    resolve:
+      type: navigate
+      url: "/product/page/create"
+
+  - id: LC5
+    label: 상품 옵션
+    check: "products.hasDisplayed == true"
+    fail_message: "노출 중인 상품이 없습니다"
+
+  - id: LC6
+    label: 메인 상품페이지
+    check: "mainProduct.productGroupViewStatus == 'ACTIVE'"
+    fail_message: "메인 상품페이지가 미설정 또는 {mainProduct.productGroupViewStatus} 상태입니다"
+    resolve:
+      type: action
+      action_id: update_main_product_setting
+      slots:
+        view_status: "ACTIVE"
+
+  - id: LC7
+    label: 대표 이미지
+    check: "image.isPlaceholder == false"
+    fail_message: "대표 이미지가 플레이스홀더입니다"
+    resolve:
+      type: navigate
+      url: "/official-club/{master_cms_id}"
