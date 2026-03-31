@@ -128,12 +128,13 @@ def _get_api_map():
 
 
 def _data_diagnose_visibility(state: WizardState) -> dict:
-    """diagnose_visibility 호출 → 원본 데이터 반환."""
-    from src.agents.validator import diagnose_visibility
+    """DiagnoseEngine으로 진단 → 원본 데이터 반환."""
+    from src.diagnose_engine import get_engine
 
     master_cms_id = state.selections.get("master_cms_id", "")
     master_name = state.selections.get("master_name", "")
-    result = diagnose_visibility(master_cms_id or master_name)
+    engine = get_engine()
+    result = engine.diagnose(master_cms_id or master_name)
     return result
 
 

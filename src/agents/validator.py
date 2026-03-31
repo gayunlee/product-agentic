@@ -1,8 +1,14 @@
 """
-검증 에이전트 — 사전조건 체크 + 상태 검증 + 결과 확인.
+검증 에이전트 (레거시) — 사전조건 체크 + 상태 검증 + 결과 확인.
 
-판단 범위: "이 액션을 실행해도 되나?" — 규칙 기반 체크.
-스테이트 머신 없이, 사전조건 규칙 테이블로 유연하게 순서를 강제한다.
+⚠️ DEPRECATED: 새 코드는 src/harness.py (ActionHarness)와 src/diagnose_engine.py (DiagnoseEngine)를 사용.
+이 모듈은 wizard.py의 check_cascading_effects 의존과 MOCK_API_RESPONSES 때문에 유지.
+
+executor.py는 더 이상 이 모듈의 tool을 사용하지 않음.
+- check_prerequisites → ActionHarness (registry.yaml prerequisites)
+- check_idempotency → ActionHarness (registry.yaml prerequisites)
+- diagnose_visibility → DiagnoseEngine (visibility_chain.yaml)
+- check_cascading_effects → ActionHarness (registry.yaml cascading) + wizard.py에서 직접 사용
 """
 
 from __future__ import annotations
