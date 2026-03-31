@@ -22,7 +22,7 @@ os.environ["MOCK_MODE"] = "true"
 from dotenv import load_dotenv
 load_dotenv()
 
-from src.agents import create_orchestrator
+from src.agents import create_agent_system
 
 
 # 시나리오 정의: (번호, 유저 메시지, 기대 라우팅, 기대 키워드)
@@ -110,7 +110,8 @@ def main():
     print("멀티 에이전트 시나리오 테스트 (32개)")
     print("=" * 60)
 
-    agent = create_orchestrator()
+    system = create_agent_system()
+    agent = system.orchestrator
     results = []
     pass_count = 0
     partial_count = 0

@@ -8,7 +8,22 @@ Usage:
 
 import pytest
 from unittest.mock import MagicMock
-from src.agent.flow_guard import FlowGuard, PHASE_TOOLS
+from legacy.agent.flow_guard import FlowGuard, PHASE_TOOLS
+
+
+def _wrap_result(data) -> dict:
+    """테스트 데이터를 실제 ToolResult 형식으로 감싼다.
+
+    FlowGuard._after_tool_call은 event.result를 사용하고,
+    _extract_result가 result["content"][0]["text"]에서 JSON을 파싱한다.
+    에러 응답은 {"status": "error"}로 전달.
+    """
+    import json
+    if data is None:
+        return {}
+    if isinstance(data, dict) and data.get("error"):
+        return {"status": "error"}
+    return {"content": [{"text": json.dumps(data)}]}
 
 
 class FakeToolEvent:
@@ -16,7 +31,7 @@ class FakeToolEvent:
 
     def __init__(self, tool_name: str, result=None):
         self.tool_use = {"name": tool_name}
-        self.tool_result = result
+        self.result = _wrap_result(result)
         self.cancel_tool = False
 
 
@@ -152,8 +167,8 @@ class TestToolBlocking:
 
     def test_allows_search_masters_in_any_phase(self):
         """search_masters는 대부분의 Phase에서 허용."""
-        guard = FlowGuard()
         for phase in ["init", "series", "product_page", "verification"]:
+            guard = FlowGuard()  # 매 phase마다 새 인스턴스 (반복 호출 감지 방지)
             guard.current_phase = phase
             event = FakeToolEvent("search_masters")
             guard._before_tool_call(event)
