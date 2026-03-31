@@ -1,0 +1,28 @@
+# 대화 계약: 히든 처리/해제
+
+action: update_product_page_hidden
+label: "히든 처리/해제"
+
+required_context:
+  master_cms_id:
+    resolve: "search_masters로 검색"
+  page_id:
+    resolve: "get_product_page_list로 조회"
+    filter: "ACTIVE 상태인 페이지만"
+
+invariants:
+  - id: active_only
+    rule: "비공개(INACTIVE) 페이지는 히든 설정 불가"
+    enforcement: "Harness prerequisites"
+
+  - id: date_conflict_warning
+    rule: "히든 해제 시 기간 충돌 경고"
+    enforcement: "Harness cascading"
+
+  - id: term_mapping
+    rule: "'URL로만 접근가능하게' = 히든 처리. 반드시 '히든' 용어 사용"
+
+disambiguation:
+  - input: "URL로만 접근가능하게 해줘"
+    ambiguous: null
+    required: "히든 처리로 안내"

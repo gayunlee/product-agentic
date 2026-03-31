@@ -1,0 +1,32 @@
+# 대화 계약: 노출 진단
+
+action: diagnose_visibility
+label: "노출 진단"
+
+required_context:
+  master_cms_id:
+    resolve: "이름으로 직접 호출 가능 (내부 검색)"
+
+invariants:
+  - id: use_tool
+    rule: "직접 판단하지 말고 반드시 diagnose_visibility Tool을 호출해야 한다"
+    enforcement: "프롬프트 규칙"
+
+  - id: first_failure
+    rule: "진단 결과의 first_failure와 recommendation을 전달해야 한다"
+
+  - id: resolve_offer
+    rule: "해결 가능한 문제면 '해결해드릴까요?' 후속 질문"
+
+disambiguation:
+  - input: "왜 안 보여?"
+    ambiguous: "어떤 오피셜클럽인지"
+    required: "오피셜클럽 이름 물어보기"
+
+  - input: "조조형우 왜 안 보여?"
+    ambiguous: null
+    required: "즉시 진단"
+
+  - input: "게시판이 왜 안 보여?"
+    ambiguous: null
+    required: "get_community_settings로 진단 (diagnose_visibility 아님)"

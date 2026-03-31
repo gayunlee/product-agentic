@@ -1,0 +1,50 @@
+# 대화 계약: 상품 공개/비공개
+#
+# LLM이 어떻게 말하든 자유, 이 조건(invariant)만 지키면 OK.
+# 테스트 자동화 시 이 파일을 기준으로 다턴 대화 시뮬레이션.
+
+action: update_product_display
+label: "상품 공개/비공개"
+
+required_context:
+  master_cms_id:
+    resolve: "search_masters로 검색"
+    if_multiple: "목록 보여주고 선택받기"
+    if_zero: "마스터를 찾을 수 없다고 안내"
+  page_id:
+    resolve: "get_product_page_list로 조회"
+    if_multiple: "목록 보여주고 선택받기"
+    if_one: "자동 선택 가능 (확인 질문)"
+  product_id:
+    resolve: "get_product_list_by_page로 조회"
+    if_multiple: "목록 보여주고 선택받기"
+    if_one: "자동 선택 가능 (확인 질문)"
+
+invariants:
+  - id: no_ambiguity
+    rule: "유저가 '상품'이라 했을 때 상품페이지와 상품 옵션 구분이 안 되면 물어봐야 한다"
+
+  - id: no_auto_execute
+    rule: "유저 확인 없이 쓰기 API를 호출하면 안 된다"
+    enforcement: "Harness가 강제 (HC3)"
+
+  - id: cascade_warning
+    rule: "마지막 공개 상품이면 경고해야 한다"
+    enforcement: "Harness가 강제 (cascading)"
+
+  - id: target_confirmation
+    rule: "실행 전에 대상을 명시해야 한다"
+    enforcement: "Harness confirmation 템플릿"
+
+disambiguation:
+  - input: "{name} 비공개해줘"
+    ambiguous: "상품인지 상품페이지인지"
+    required: "구분 질문"
+
+  - input: "비공개해줘"
+    ambiguous: "대상 전체"
+    required: "마스터부터 물어보기"
+
+  - input: "{master} {page} {product} 비공개해줘"
+    ambiguous: null
+    required: "확인 후 실행"
