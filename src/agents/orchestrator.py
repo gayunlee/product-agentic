@@ -132,33 +132,9 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         Args:
             master_name: 오피셜클럽 이름 (예: "조조형우", "홍춘욱")
         """
-        from src.agents.validator import diagnose_visibility
-        from src.agents.response import AgentResponse, render_response_json
-
-        # 코드로 직접 실행 (executor LLM 불필요)
-        result = diagnose_visibility(master_name)
-
-        # 템플릿으로 렌더링
-        data = {
-            "checks": [
-                {"name": c.get("label", ""), "ok": c.get("passed", False), "value": c.get("actual", "")}
-                for c in result.get("checks", [])
-            ],
-            "first_failure": result.get("first_failure"),
-            "fix_label": "해결하기" if result.get("first_failure") else None,
-            "nav_url": "/product/page/list",
-        }
-        if result.get("weblink_warnings"):
-            data["weblink_warnings"] = result["weblink_warnings"]
-
-        resp_type = "diagnose" if not result.get("visible") else "info"
-        resp = AgentResponse(
-            type=resp_type,
-            summary=f"{result.get('master_name', master_name)} 노출 진단 완료. "
-                    + (f"원인: {result['first_failure']}" if result.get("first_failure") else "모든 조건 정상."),
-            data=data,
-        )
-        return render_response_json(resp)
+        from src.diagnose_engine import get_engine
+        engine = get_engine()
+        return engine.diagnose_rendered(master_name)
 
     @strands_tool
     def query(master_name: str, query_type: str = "product_pages") -> str:

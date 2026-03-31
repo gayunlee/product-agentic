@@ -45,6 +45,7 @@ else:
     print("🔴 LIVE MODE — 실제 관리자센터 API 호출")
 
 import json
+import re
 import asyncio
 import queue
 import threading
@@ -264,10 +265,46 @@ def _call_domain_direct(message: str, system: AgentSystem) -> tuple[str, list, s
     return _extract_text(result), [], "domain"
 
 
+_FOLLOWUP_PATTERNS = re.compile(r'(고쳐|해결해|수정해|변경해|고쳐줘|해결해줘|수정해줘|변경해줘|해결|수정)', re.IGNORECASE)
+
+
+def _is_diagnose_followup(message: str, session_ctx) -> bool:
+    """진단 후 후속 요청인지 감지."""
+    if not hasattr(session_ctx, 'last_diagnose_resolves') or not session_ctx.last_diagnose_resolves:
+        return False
+    return bool(_FOLLOWUP_PATTERNS.search(message))
+
+
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> dict:
     """벡터 라우터 → 오케스트레이터 LLM fallback."""
     mem = _get_memory(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id}")
+
+    # 0. 진단 후속 요청 감지 → Harness로 직접 라우팅
+    session_ctx = _sm.get(session_id)
+    if _is_diagnose_followup(message, session_ctx):
+        from src.harness import get_harness
+        resolve = session_ctx.last_diagnose_resolves[0]
+        if resolve.get("type") == "action":
+            harness = get_harness()
+            result_json = harness.validate_and_confirm(
+                resolve.get("action_id", ""),
+                resolve.get("slots", {}),
+            )
+            parsed = json.loads(result_json)
+            session_ctx.last_diagnose_resolves = None
+            return _to_response(
+                parsed.get("message", ""),
+                parsed.get("buttons", []),
+                parsed.get("mode", "execute"),
+            )
+        elif resolve.get("type") == "navigate":
+            session_ctx.last_diagnose_resolves = None
+            return _to_response(
+                f"설정 페이지로 이동해주세요.",
+                [{"type": "navigate", "label": resolve.get("label", "이동"), "url": resolve.get("url", "/product/page/list"), "variant": "primary", "clickable": "always"}],
+                "guide",
+            )
 
     # 1. Memory에 유저 메시지 저장
     save_turn(mem, "user", message)
@@ -289,6 +326,7 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
             buttons, mode = [], "reject"
 
         save_turn(mem, "assistant", msg[:500])
+        _store_diagnose_resolves(session_id, mode, msg, buttons)
         print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
         return _to_response(msg, buttons, mode)
 
@@ -298,7 +336,6 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     result_text = _extract_text(result)
 
     # 응답 파싱 — diagnose 등 __agent_response__ JSON이 포함될 수 있음
-    # TODO: Phase 2에서 __agent_response__ 파싱 제거 예정
     agent_response = _try_parse_agent_response(result_text)
     if agent_response:
         msg = agent_response.get("message", result_text)
@@ -311,9 +348,25 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
 
     # 5. Memory에 어시스턴트 응답 저장
     save_turn(mem, "assistant", msg[:500])
+    _store_diagnose_resolves(session_id, mode, msg, buttons)
 
     print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
     return _to_response(msg, buttons, mode)
+
+
+def _store_diagnose_resolves(session_id: str, mode: str, msg: str, buttons: list):
+    """진단 응답에서 resolve_actions를 세션에 저장."""
+    if mode != "diagnose":
+        return
+    # __agent_response__에서 resolve_actions 추출
+    try:
+        parsed = _try_parse_agent_response(msg)
+        if parsed and parsed.get("resolve_actions"):
+            session_ctx = _sm.get(session_id)
+            session_ctx.last_diagnose_resolves = parsed["resolve_actions"]
+            print(f"📎 진단 resolve 저장: {len(parsed['resolve_actions'])}개")
+    except Exception:
+        pass
 
 
 @app.post("/chat")
@@ -337,6 +390,22 @@ async def chat(req: ChatRequest):
 
         # 2. 위저드 버튼 입력
         if req.button:
+            # 2-1. Harness execute_confirmed (액션 실행 확인)
+            btn_action = req.button.get("action") if isinstance(req.button, dict) else getattr(req.button, "action", None)
+            btn_payload = req.button.get("payload") if isinstance(req.button, dict) else getattr(req.button, "payload", None)
+            if btn_action == "execute_confirmed" and btn_payload:
+                from src.harness import get_harness
+                harness = get_harness()
+                result = harness.execute_confirmed(
+                    action_id=btn_payload.get("action_id", ""),
+                    slots=btn_payload.get("slots", {}),
+                )
+                return _to_response(
+                    result.get("message", ""),
+                    result.get("buttons", []),
+                    result.get("mode", "done"),
+                )
+
             if ctx.wizard and ctx.wizard.is_active():
                 print(f"🧙 위저드 버튼: {req.button}")
                 msg, buttons, mode = ctx.wizard.handle(req.button)

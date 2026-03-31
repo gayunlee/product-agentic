@@ -47,6 +47,7 @@ class ConversationContext:
     last_response_mode: str = "idle"
     flow_context: dict = field(default_factory=dict)  # 축적된 슬롯 데이터
     last_activity: float = field(default_factory=time.time)
+    last_diagnose_resolves: list[dict] | None = None  # 진단 후 해결 액션
 
 
 class SessionStore:

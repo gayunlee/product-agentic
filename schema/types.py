@@ -78,6 +78,7 @@ class ButtonInput(BaseModel):
     type: Literal["select", "action"]
     value: str | None = None
     action: str | None = None
+    payload: dict | None = None  # execute_confirmed용 (action_id, slots)
 
 
 class ChatContext(BaseModel):
