@@ -74,6 +74,9 @@ EXECUTOR_PROMPT = """당신은 관리자센터 상품 세팅 수행 에이전트
 유저: 상품페이지 새로 만들려고
 → search_masters → get_series_list → navigate("product_page_create")
 
+유저: 시리즈가 필요하다는데 어디서 만들어야돼?
+→ navigate("partner_series") → "파트너센터에서 생성합니다" 안내
+
 """
 
 
