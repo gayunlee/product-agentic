@@ -769,7 +769,17 @@ async function clickButton(btn) {
   input.focus();
 }
 
+function disablePreviousButtons() {
+  container.querySelectorAll('.action-btn:not([disabled])').forEach(btn => {
+    btn.disabled = true;
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    btn.onclick = null;
+  });
+}
+
 function renderResponse(data) {
+  disablePreviousButtons();
   const mode = data.mode || 'idle';
   const modeLabels = { diagnose:'진단', execute:'실행 확인', done:'완료', wizard:'위저드', guide:'가이드', error:'오류', reject:'거부', idle:'', select:'선택', launch_check:'런칭 체크', info:'조회' };
   let html = '';
@@ -816,6 +826,7 @@ async function send() {
   if (!text) return;
   sending = true;
   input.value = '';
+  disablePreviousButtons();
   addMsg(text, 'user');
   sendBtn.disabled = true;
   const loading = addMsg(progressMsgs[0], 'agent loading');

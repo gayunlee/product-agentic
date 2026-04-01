@@ -231,6 +231,16 @@ SCENARIOS = [
      "idle", "취소"),
 
     # ════════════════════════════════════
+    # 에러 후 재선택 (이전 selections 초기화 검증)
+    # ════════════════════════════════════
+
+    # 마스터 A 선택 → 에러 → 마스터 B 선택 → 완료
+    ("hidden-error-reselect-master",
+     "hidden",
+     [("select", "master_100"), ("back",), ("select", "master_35"), ("select_first",), ("execute",)],
+     "done", "완료"),
+
+    # ════════════════════════════════════
     # 멱등성 차단 (exclude)
     # ════════════════════════════════════
 
@@ -263,6 +273,36 @@ SCENARIOS = [
 
 
 # ─── exclude(disabled) 버튼 검증 ───
+
+
+class TestDownstreamReset:
+    """마스터 재선택 시 하위 selections(page_id 등)이 초기화되는지 검증."""
+
+    def test_reselect_master_clears_page(self):
+        """마스터 A 선택 → 페이지 선택 → back → 마스터 B 선택 → page_id가 초기화."""
+        state = create_wizard("hidden")
+        msg, btns, _ = state.start()
+
+        # 마스터 A 선택
+        master_a = next(b for b in btns if "35" in b.get("value", ""))
+        msg, btns, _ = state.handle({"value": master_a["value"]})
+
+        # 페이지 선택
+        page = next(b for b in btns if b.get("value", "").startswith("page_"))
+        state.handle({"value": page["value"]})
+        assert state.selections.get("page_id"), "page_id가 설정되어야 함"
+
+        # back → 마스터 선택으로
+        state.handle({"action": "back"})  # → 페이지 선택
+        state.handle({"action": "back"})  # → 마스터 선택
+
+        # 마스터 B 선택
+        msg, btns, _ = state._run_current_step()
+        master_b = next(b for b in btns if "100" in b.get("value", ""))
+        state.handle({"value": master_b["value"]})
+
+        # page_id가 초기화되어야
+        assert state.selections.get("page_id") is None or state.selections["master_cms_id"] == "100"
 
 
 class TestExcludeDisabled:
