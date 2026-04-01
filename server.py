@@ -590,6 +590,25 @@ header h1 { font-size: 18px; font-weight: 600; }
 .loading { display: inline-block; }
 .loading::after { content: ''; animation: dots 1.5s steps(4) infinite; }
 @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+#wizard-bar { padding: 8px 24px; background: #fff; border-bottom: 1px solid #e0e0e0; display: flex; gap: 8px; flex-wrap: wrap; }
+.wizard-btn { background: #f0f0f0; border: 1px solid #ddd; border-radius: 20px; padding: 6px 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+.wizard-btn:hover { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+.action-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.action-btn { background: #1a1a2e; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
+.action-btn:hover { background: #16213e; }
+.action-btn:disabled { background: #999; cursor: not-allowed; }
+.action-btn.navigate { background: #0066cc; }
+.action-btn.navigate:hover { background: #0055aa; }
+.action-btn.danger { background: #e94560; }
+.action-btn.danger:hover { background: #c73e54; }
+.mode-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-bottom: 6px; font-weight: 600; }
+.mode-badge.diagnose { background: #fff3cd; color: #856404; }
+.mode-badge.execute { background: #d4edda; color: #155724; }
+.mode-badge.done { background: #cce5ff; color: #004085; }
+.mode-badge.wizard { background: #e2d9f3; color: #5a3d8a; }
+.mode-badge.guide { background: #d1ecf1; color: #0c5460; }
+.mode-badge.error { background: #f8d7da; color: #721c24; }
+.mode-badge.reject { background: #f8d7da; color: #721c24; }
 </style>
 </head>
 <body>
@@ -608,6 +627,7 @@ header h1 { font-size: 18px; font-weight: 600; }
     <button onclick="saveToken()" style="background:#1a1a2e;color:white;border:none;padding:6px 12px;border-radius:4px;font-size:12px;cursor:pointer;">저장</button>
   </div>
 </div>
+<div id="wizard-bar"></div>
 <div id="chat-container">
   <div class="msg system">상품 세팅을 시작하려면 요청을 입력하세요.</div>
 </div>
@@ -651,6 +671,103 @@ function addMsg(text, cls) {
   return div;
 }
 
+// ── 위저드 바 로드 ──
+async function loadWizardActions() {
+  try {
+    const res = await fetch('/wizard/actions');
+    const actions = await res.json();
+    const bar = document.getElementById('wizard-bar');
+    bar.innerHTML = actions.map(a =>
+      `<button class="wizard-btn" onclick="startWizard('${a.action}')">${a.icon} ${a.label}</button>`
+    ).join('');
+  } catch(e) { console.error('위저드 로드 실패:', e); }
+}
+loadWizardActions();
+
+async function startWizard(action) {
+  sending = true;
+  sendBtn.disabled = true;
+  addMsg(`🧙 위저드: ${action}`, 'user');
+  const loading = addMsg('🧙 위저드 시작 중...', 'agent loading');
+  try {
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: '', wizard_action: action })
+    });
+    const data = await res.json();
+    loading.remove();
+    renderResponse(data);
+  } catch(e) {
+    loading.remove();
+    addMsg('오류: ' + e.message, 'system');
+  }
+  sendBtn.disabled = false;
+  sending = false;
+  input.focus();
+}
+
+async function clickButton(btn) {
+  // navigate 버튼은 URL로 이동
+  if (btn.type === 'navigate' && btn.url) {
+    window.open(btn.url, '_blank');
+    return;
+  }
+  sending = true;
+  sendBtn.disabled = true;
+  addMsg(`🔘 ${btn.label || btn.action}`, 'user');
+  const loading = addMsg('처리 중...', 'agent loading');
+  try {
+    const body = { message: '', button: btn };
+    const res = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    loading.remove();
+    renderResponse(data);
+  } catch(e) {
+    loading.remove();
+    addMsg('오류: ' + e.message, 'system');
+  }
+  sendBtn.disabled = false;
+  sending = false;
+  input.focus();
+}
+
+function renderResponse(data) {
+  const mode = data.mode || 'idle';
+  const modeLabels = { diagnose:'진단', execute:'실행 확인', done:'완료', wizard:'위저드', guide:'가이드', error:'오류', reject:'거부', idle:'', select:'선택', launch_check:'런칭 체크', info:'조회' };
+  let html = '';
+  if (mode !== 'idle' && modeLabels[mode]) {
+    html += `<span class="mode-badge ${mode}">${modeLabels[mode]}</span>\\n`;
+  }
+  if (typeof marked !== 'undefined') {
+    html += marked.parse(data.message || '');
+  } else {
+    html += (data.message || '').replace(/\\n/g, '<br>');
+  }
+  // 버튼 렌더링
+  if (data.buttons && data.buttons.length > 0) {
+    html += '<div class="action-btns">';
+    data.buttons.forEach((b, i) => {
+      const cls = b.action === 'navigate' ? 'navigate' : (b.action === 'cancel' ? 'danger' : '');
+      if (b.disabled) {
+        html += `<button class="action-btn" disabled style="opacity:0.5;cursor:not-allowed;text-decoration:line-through;">${b.label || b.action}</button>`;
+      } else {
+        html += `<button class="action-btn ${cls}" onclick='clickButton(${JSON.stringify(b)})'>${b.label || b.action}</button>`;
+      }
+    });
+    html += '</div>';
+  }
+  const div = document.createElement('div');
+  div.className = 'msg agent';
+  div.innerHTML = html;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
 const progressMsgs = [
   '🤔 생각하는 중...',
   '🔍 정보 조회 중...',
@@ -686,7 +803,7 @@ async function send() {
     const data = await res.json();
     clearInterval(progressInterval);
     loading.remove();
-    addMsg(data.message, 'agent');
+    renderResponse(data);
   } catch (e) {
     clearInterval(progressInterval);
     loading.remove();
