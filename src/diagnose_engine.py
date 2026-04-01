@@ -199,11 +199,20 @@ class DiagnoseEngine:
 
         resp_type = "diagnose" if not result.get("visible") else "info"
         master_name = result.get("master_name", master_id)
-        summary = f"{master_name} 노출 진단 완료. "
-        if result.get("first_failure"):
-            summary += f"원인: {result['first_failure']}"
+
+        # 검색 자체가 실패한 경우 "확인 불가"
+        first_failure = result.get("first_failure")
+        search_failed = any(
+            c.get("condition") == "master_search" and not c.get("passed", False)
+            for c in result.get("checks", [])
+        )
+
+        if search_failed:
+            summary = f"{master_name or master_id} 노출 진단: 확인 불가. 원인: {first_failure}"
+        elif first_failure:
+            summary = f"{master_name} 노출 진단 완료. 원인: {first_failure}"
         else:
-            summary += "모든 조건 정상."
+            summary = f"{master_name} 노출 진단 완료. 모든 조건 정상."
 
         resp = AgentResponse(type=resp_type, summary=summary, data=data)
         return render_response_json(resp)
@@ -213,8 +222,15 @@ class DiagnoseEngine:
     def _not_found(self, master_id: str) -> dict:
         return {
             "visible": False,
-            "checks": [],
-            "first_failure": f"'{master_id}' 검색 결과 없음",
+            "checks": [
+                {
+                    "condition": "master_search",
+                    "label": "오피셜클럽 검색",
+                    "passed": False,
+                    "actual": "검색 결과 없음",
+                },
+            ],
+            "first_failure": "오피셜클럽 검색",
             "recommendation": "정확한 오피셜클럽 이름을 확인하세요.",
             "master_name": "",
         }
@@ -224,6 +240,15 @@ class DiagnoseEngine:
         main_product = _api_get(f"/v1/masters/{master_id}/main-product-group")
         main_active = False
         weblink_warnings = []
+
+        if isinstance(main_product, dict) and main_product.get("error"):
+            checks.append({
+                "condition": "main_product_active",
+                "label": "메인 상품 페이지 ACTIVE",
+                "passed": False,
+                "actual": "조회 실패",
+            })
+            return main_active, main_product, weblink_warnings
 
         if isinstance(main_product, dict):
             main_active = main_product.get("productGroupViewStatus") == "ACTIVE"

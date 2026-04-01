@@ -20,6 +20,12 @@ dependencies = [
     "bedrock-agentcore>=1.4.7",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "live: E2E tests requiring live API (not mock)",
+    "qa: QA integration tests requiring us-plus + QA agent",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",

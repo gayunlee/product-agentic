@@ -172,7 +172,24 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
     예시: search_masters(search_keyword="조조형우") → cmsId 확보
     """
     if MOCK_MODE:
-        return _get_mock("search_masters", keyword=search_keyword)
+        result = _get_mock("search_masters", keyword=search_keyword)
+        masters = result.get("masters", []) if isinstance(result, dict) else result
+        if not masters and search_keyword:
+            words = search_keyword.split()
+            if len(words) > 1:
+                seen_ids: set[str] = set()
+                merged: list[dict] = []
+                for word in words:
+                    partial = _get_mock("search_masters", keyword=word)
+                    items = partial.get("masters", []) if isinstance(partial, dict) else partial
+                    for m in items:
+                        cms_id = m.get("cmsId", m.get("id", ""))
+                        if cms_id not in seen_ids:
+                            seen_ids.add(cms_id)
+                            merged.append(m)
+                if merged:
+                    result = {"masters": merged} if isinstance(result, dict) else merged
+        return result
     params = {}
     if search_keyword:
         params["searchKeyword"] = search_keyword
@@ -181,7 +198,27 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
         params["publicType"] = public_type
     with _client() as c:
         r = c.get("/v1/masters", params=params)
-        return _safe_request(r)
+        result = _safe_request(r)
+    if not result.get("masters") and search_keyword:
+        words = search_keyword.split()
+        if len(words) > 1:
+            seen_ids: set[str] = set()
+            merged: list[dict] = []
+            for word in words:
+                params = {"searchKeyword": word, "searchCategory": "NAME"}
+                if public_type != "ALL":
+                    params["publicType"] = public_type
+                with _client() as c:
+                    r = c.get("/v1/masters", params=params)
+                    partial = _safe_request(r)
+                for m in partial.get("masters", []):
+                    cms_id = m.get("cmsId", m.get("id", ""))
+                    if cms_id not in seen_ids:
+                        seen_ids.add(cms_id)
+                        merged.append(m)
+            if merged:
+                result = {"masters": merged}
+    return result
 
 
 @tool
