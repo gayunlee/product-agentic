@@ -121,34 +121,49 @@ def _inject_token(context: dict | None):
         print("⚠️ context 없음 → .env 토큰 사용")
 
 
-# Tool 이름 → 한국어 진행 상황 매핑
-TOOL_PROGRESS = {
-    # 오케스트레이터 Tool
-    "diagnose": "🔍 노출 진단 중...",
-    "query": "📋 조회 중...",
-    "execute": "🔧 실행 요청 처리 중...",
-    "guide": "🔗 가이드 생성 중...",
-    "ask_domain_expert": "📚 도메인 지식 조회 중...",
-    # executor Tool
-    "validate": "✅ 사전조건 확인 중...",
-    "search_masters": "🔍 오피셜클럽 검색 중...",
-    "get_master_detail": "📋 오피셜클럽 상세 조회 중...",
-    "get_master_groups": "📋 마스터 그룹 조회 중...",
-    "get_series_list": "📋 시리즈 목록 조회 중...",
-    "get_product_page_list": "📦 상품 페이지 목록 조회 중...",
-    "get_product_page_detail": "📦 상품 페이지 상세 조회 중...",
-    "get_product_list_by_page": "📦 상품 옵션 조회 중...",
-    "get_community_settings": "🏠 커뮤니티 설정 조회 중...",
-    "update_product_display": "⚡ 상품 공개 상태 변경 중...",
-    "update_product_page_status": "⚡ 상품 페이지 상태 변경 중...",
-    "update_product_page": "⚡ 상품 페이지 수정 중...",
-    "update_main_product_setting": "⚡ 메인 상품 설정 변경 중...",
-    "navigate": "🔗 페이지 이동 안내 생성 중...",
-    "retrieve": "📚 도메인 지식 검색 중...",
-    "diagnose_visibility": "🔍 노출 체인 진단 중...",
-    "check_prerequisites": "✅ 사전조건 확인 중...",
-    "check_idempotency": "✅ 중복 실행 확인 중...",
+# 진행 상황 메시지 — 명확한 것은 구체적으로, 나머지는 랜덤 펀 메시지
+import random
+
+_PROGRESS_FALLBACKS = [
+    "상품 세팅 살펴보는 중...",
+    "데이터 뒤적뒤적...",
+    "꼼꼼히 체크하는 중...",
+    "설정값 확인하는 중...",
+    "열심히 일하는 중...",
+    "열심히 찾고 있어요...",
+    "세팅 분석 중...",
+    "조금만 기다려주세요...",
+    "정보 수집 중...",
+    "관리자센터 탐험 중...",
+    "노출 조건 확인 중...",
+    "거의 다 됐어요...",
+]
+
+_ACTION_LABELS = {
+    "update_product_display": "상품 공개 상태 변경",
+    "update_product_page_status": "상품페이지 상태 변경",
+    "update_product_page_hidden": "히든 처리/해제",
+    "update_main_product_setting": "메인 상품 설정 변경",
 }
+
+
+def _build_progress(tool_name: str, tool_input: dict, last_msg: str = "") -> str:
+    """명확한 tool은 구체적 메시지, 나머지는 랜덤 펀 메시지."""
+    if tool_name == "search_masters":
+        keyword = tool_input.get("search_keyword", "")
+        return f"🔍 '{keyword}' 검색 중..." if keyword else "🔍 오피셜클럽 검색 중..."
+    if tool_name == "diagnose_visibility":
+        return "🔍 노출 체인 진단 중..."
+    if tool_name == "request_action":
+        label = _ACTION_LABELS.get(tool_input.get("action_id", ""), "변경")
+        return f"⚡ {label} 검증 중..."
+    if tool_name == "check_prerequisites":
+        return "✅ 사전조건 확인 중..."
+    if tool_name == "check_idempotency":
+        return "✅ 중복 실행 확인 중..."
+    # 나머지는 랜덤 (직전과 다른 메시지 선택)
+    candidates = [m for m in _PROGRESS_FALLBACKS if m != last_msg] or _PROGRESS_FALLBACKS
+    return random.choice(candidates)
 
 
 class StreamingCallbackHandler:
@@ -157,13 +172,16 @@ class StreamingCallbackHandler:
     def __init__(self, event_queue: queue.Queue):
         self.event_queue = event_queue
         self.tool_count = 0
+        self.last_progress = ""
 
     def __call__(self, **kwargs):
         tool_use = kwargs.get("event", {}).get("contentBlockStart", {}).get("start", {}).get("toolUse")
         if tool_use:
             self.tool_count += 1
             tool_name = tool_use["name"]
-            progress = TOOL_PROGRESS.get(tool_name, f"🔄 {tool_name} 처리 중...")
+            tool_input = tool_use.get("input", {})
+            progress = _build_progress(tool_name, tool_input, self.last_progress)
+            self.last_progress = progress
             self.event_queue.put({"type": "progress", "message": progress, "tool": tool_name, "count": self.tool_count})
 
 
@@ -435,6 +453,7 @@ async def chat_stream(req: ChatRequest):
     async def event_generator():
         full_text = ""
         tool_count = 0
+        last_progress = ""
 
         try:
             async for event in system.orchestrator.stream_async(message):
@@ -450,7 +469,9 @@ async def chat_stream(req: ChatRequest):
                 if tool_use:
                     tool_count += 1
                     tool_name = tool_use["name"]
-                    progress = TOOL_PROGRESS.get(tool_name, f"🔄 {tool_name} 처리 중...")
+                    tool_input = tool_use.get("input", {})
+                    progress = _build_progress(tool_name, tool_input, last_progress)
+                    last_progress = progress
                     yield f"event: progress\ndata: {json.dumps({'message': progress, 'tool': tool_name, 'count': tool_count}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
