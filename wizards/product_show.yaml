@@ -18,6 +18,10 @@ steps:
     type: select_product
     label: 상품 선택
     message: "**상품 공개** — {page_title}의 상품을 선택하세요."
+    exclude:
+      field: isDisplay
+      value: "true"
+      reason: "이미 공개"
 
   - id: confirm
     type: confirm

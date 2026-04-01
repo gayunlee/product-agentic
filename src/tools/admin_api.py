@@ -39,7 +39,10 @@ MOCK_RESPONSES = {
     "update_product_page": {"success": True, "status": 200},
     "update_main_product_setting": {"success": True, "status": 200},
     "get_product_page_detail": {"id": "mock_page_001", "masterId": "35", "title": "월간 투자 리포트 페이지", "status": "ACTIVE", "type": "SUBSCRIPTION", "code": 148, "isAlwaysPublic": True, "isChangeable": True, "isHidden": False, "mainContents": [{"type": "IMAGE", "contentUrl": PLACEHOLDER_IMAGE}], "contents": [{"imageUrl": PLACEHOLDER_IMAGE, "sequence": 0}]},
-    "get_product_list_by_page": [{"productId": "99999", "name": "월간 투자 리포트", "price": 29900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": True, "viewSequence": 0}],
+    "get_product_list_by_page": [
+        {"productId": "99999", "name": "월간 투자 리포트", "price": 29900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": True, "viewSequence": 0},
+        {"productId": "99998", "name": "프리미엄 리포트", "price": 49900, "type": "SUBSCRIPTION", "paymentPeriod": "ONE_MONTH", "isDisplay": False, "viewSequence": 1},
+    ],
     "get_community_settings": {"postBoardActiveStatus": "ACTIVE", "postBoardName": "게시판", "donationActiveStatus": "ACTIVE"},
     "navigate": {"url": "/product", "label": "상품 페이지 목록"},
 }
