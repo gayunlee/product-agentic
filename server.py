@@ -741,6 +741,7 @@ async function startWizard(action) {
 }
 
 async function clickButton(btn) {
+  if (btn.disabled) return;
   // navigate 버튼은 URL로 이동
   if (btn.type === 'navigate' && btn.url) {
     window.open(btn.url, '_blank');

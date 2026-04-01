@@ -402,6 +402,8 @@ class WizardState:
             return self._prev()
 
         value = button_data.get("value", "")
+        if button_data.get("disabled"):
+            return self._run_current_step()  # disabled 버튼 무시, 현재 화면 다시 표시
         if value:
             return self._select(value)
 
