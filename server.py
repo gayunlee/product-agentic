@@ -544,6 +544,12 @@ async def wizard_actions():
     return _get_engine().get_actions()
 
 
+@app.get("/mode")
+async def get_mode():
+    """현재 서버 모드 반환."""
+    return {"mock": _MOCK_MODE}
+
+
 @app.post("/reset")
 async def reset():
     _sm.clear_all()
@@ -564,7 +570,10 @@ async def index():
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; height: 100vh; display: flex; flex-direction: column; }
 header { background: #1a1a2e; color: white; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
-header h1 { font-size: 18px; font-weight: 600; }
+header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+#mode-indicator { font-size: 11px; padding: 2px 10px; border-radius: 10px; font-weight: 700; }
+#mode-indicator.mock { background: #ffc107; color: #333; }
+#mode-indicator.live { background: #e94560; color: white; }
 #reset-btn { background: #e94560; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 #reset-btn:hover { background: #c73e54; }
 #chat-container { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
@@ -613,7 +622,7 @@ header h1 { font-size: 18px; font-weight: 600; }
 </head>
 <body>
 <header>
-  <h1>상품 세팅 에이전트 (멀티 에이전트)</h1>
+  <h1>상품 세팅 에이전트 <span id="mode-indicator"></span></h1>
   <div style="display:flex;gap:8px;align-items:center;">
     <button id="token-btn" onclick="toggleToken()" style="background:#16213e;color:white;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:12px;">토큰 설정</button>
     <span id="token-status" style="font-size:11px;color:#aaa;"></span>
@@ -670,6 +679,25 @@ function addMsg(text, cls) {
   container.scrollTop = container.scrollHeight;
   return div;
 }
+
+// ── 모드 인디케이터 ──
+async function loadMode() {
+  try {
+    const res = await fetch('/mode');
+    const data = await res.json();
+    const el = document.getElementById('mode-indicator');
+    if (data.mock) {
+      el.textContent = 'MOCK';
+      el.className = 'mock';
+      document.querySelector('header').style.background = '#1a1a2e';
+    } else {
+      el.textContent = 'LIVE';
+      el.className = 'live';
+      document.querySelector('header').style.background = '#8b0000';
+    }
+  } catch(e) { console.error('모드 확인 실패:', e); }
+}
+loadMode();
 
 // ── 위저드 바 로드 ──
 async function loadWizardActions() {
