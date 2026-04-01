@@ -208,12 +208,8 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
                      (예: "조조형우(cmsId=42)의 '월간 리포트' 상품페이지를 비공개 처리해줘.")
         """
         result_text = _extract_result(executor(request))
-        # request_action이 호출되었으면 harness 원본 응답을 직접 반환
-        # (executor LLM이 해석/요약하더라도 원본 보존)
-        from src.agents.executor import get_last_harness_response
-        harness_resp = get_last_harness_response()
-        if harness_resp:
-            return harness_resp
+        # harness 응답은 server.py의 _check_harness_override()가 최종 복원.
+        # 여기서 소비하면 server.py에서 못 쓰므로, executor 결과 텍스트를 그대로 반환.
         return result_text
 
     @strands_tool
