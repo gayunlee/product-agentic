@@ -488,6 +488,11 @@ class WizardState:
         self.current_step_index += 1
         return self._run_current_step()
 
+    def _run_current_step_with_warning(self, warning: str) -> tuple[str, list[dict], str]:
+        """현재 스텝을 다시 실행하되 경고 메시지를 앞에 붙인다."""
+        msg, buttons, mode = self._run_current_step()
+        return f"⚠️ {warning}\n\n{msg}", buttons, mode
+
     def _prev(self) -> tuple[str, list[dict], str]:
         """이전 스텝."""
         if self.current_step_index <= 0:
@@ -622,9 +627,11 @@ def _run_select_page(state: WizardState, step_def: StepDefinition) -> tuple[str,
         page_list = []
 
     if not page_list:
-        state.reset()
+        # reset하지 않고 마스터 선택으로 되돌림 — 다른 클럽 선택 가능
+        state.current_step_index = max(0, state.current_step_index - 1)
         master_name = state.selections.get("master_name", "")
-        return f"{master_name} 오피셜클럽에 상품페이지가 없습니다.", [], "error"
+        msg = f"{master_name} 오피셜클럽에 상품페이지가 없습니다.\n\n다른 오피셜클럽을 선택하세요."
+        return state._run_current_step_with_warning(msg)
 
     # exclude 설정: 이미 목표 상태인 항목은 disabled 처리
     exclude_field = None
@@ -658,9 +665,10 @@ def _run_select_page(state: WizardState, step_def: StepDefinition) -> tuple[str,
             selectable_count += 1
 
     if selectable_count == 0:
-        state.reset()
+        state.current_step_index = max(0, state.current_step_index - 1)
         master_name = state.selections.get("master_name", "")
-        return f"{master_name}에 {exclude_reason} 상태가 아닌 상품페이지가 없습니다.", [], "error"
+        msg = f"{master_name}에 {exclude_reason} 상태가 아닌 상품페이지가 없습니다.\n\n다른 오피셜클럽을 선택하세요."
+        return state._run_current_step_with_warning(msg)
 
     buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
@@ -681,9 +689,10 @@ def _run_select_product(state: WizardState, step_def: StepDefinition) -> tuple[s
         product_list = []
 
     if not product_list:
-        state.reset()
+        state.current_step_index = max(0, state.current_step_index - 1)
         page_title = state.selections.get("page_title", "")
-        return f"{page_title}에 상품 옵션이 없습니다.", [], "error"
+        msg = f"{page_title}에 상품 옵션이 없습니다.\n\n다른 페이지를 선택하세요."
+        return state._run_current_step_with_warning(msg)
 
     # exclude 설정
     exclude_field = None
@@ -725,9 +734,10 @@ def _run_select_product(state: WizardState, step_def: StepDefinition) -> tuple[s
             selectable_count += 1
 
     if selectable_count == 0:
-        state.reset()
+        state.current_step_index = max(0, state.current_step_index - 1)
         page_title = state.selections.get("page_title", "")
-        return f"{page_title}에 {exclude_reason} 상태가 아닌 상품이 없습니다.", [], "error"
+        msg = f"{page_title}에 {exclude_reason} 상태가 아닌 상품이 없습니다.\n\n다른 페이지를 선택하세요."
+        return state._run_current_step_with_warning(msg)
 
     buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
