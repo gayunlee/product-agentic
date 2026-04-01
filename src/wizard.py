@@ -47,6 +47,8 @@ class StepDefinition:
     label: str
     message: str = ""
     cascading: bool = False
+    # select 스텝 전용: 이미 목표 상태인 항목 disable
+    exclude: dict | None = None  # {"field": "status", "value": "INACTIVE", "reason": "이미 비공개"}
     # execute 스텝 전용
     handler: str | None = None
     api: str | None = None
@@ -87,6 +89,7 @@ class WizardSchema:
                 label=s["label"],
                 message=s.get("message", ""),
                 cascading=s.get("cascading", False),
+                exclude=s.get("exclude"),
                 handler=s.get("handler"),
                 api=s.get("api"),
                 params=s.get("params", {}),
@@ -380,6 +383,10 @@ class WizardState:
             return self._select(value)
 
         if action == "execute":
+            # confirm 스텝에서 "실행" 버튼 클릭 시 → execute 스텝으로 이동
+            current = self._current_step_def()
+            if current.type == "confirm":
+                self.current_step_index += 1
             return self._execute()
 
         return "알 수 없는 입력입니다.", [], "error"
@@ -412,16 +419,22 @@ class WizardState:
         return self.schema.steps[self.current_step_index]
 
     def _format(self, template: str) -> str:
-        """selections 값으로 템플릿 치환."""
+        """selections 값으로 템플릿 치환. JSON 중괄호는 보호."""
         target = self._build_target()
-        return template.format(
-            master_name=self.selections.get("master_name", ""),
-            page_title=self.selections.get("page_title", ""),
-            product_name=self.selections.get("product_name", ""),
-            page_id=self.selections.get("page_id", ""),
-            product_id=self.selections.get("product_id", ""),
-            target=target,
-        )
+        replacements = {
+            "master_name": self.selections.get("master_name", ""),
+            "page_title": self.selections.get("page_title", ""),
+            "product_name": self.selections.get("product_name", ""),
+            "page_id": self.selections.get("page_id", ""),
+            "product_id": self.selections.get("product_id", ""),
+            "target": target,
+        }
+        # {key}만 치환하고 나머지 중괄호는 보존
+        import re
+        def _replace(m):
+            key = m.group(1)
+            return replacements[key] if key in replacements else m.group(0)
+        return re.sub(r"\{(\w+)\}", _replace, template)
 
     def _build_target(self) -> str:
         parts = []
@@ -591,8 +604,18 @@ def _run_select_page(state: WizardState, step_def: StepDefinition) -> tuple[str,
         master_name = state.selections.get("master_name", "")
         return f"{master_name} 오피셜클럽에 상품페이지가 없습니다.", [], "error"
 
+    # exclude 설정: 이미 목표 상태인 항목은 disabled 처리
+    exclude_field = None
+    exclude_value = None
+    exclude_reason = ""
+    if step_def.exclude:
+        exclude_field = step_def.exclude.get("field")
+        exclude_value = step_def.exclude.get("value")
+        exclude_reason = step_def.exclude.get("reason", "선택 불가")
+
     name_map = {}
     buttons = []
+    selectable_count = 0
     for p in page_list:
         page_id = str(p.get("id", p.get("code", "")))
         title = p.get("title", f"페이지 {page_id}")
@@ -600,7 +623,23 @@ def _run_select_page(state: WizardState, step_def: StepDefinition) -> tuple[str,
         label = f"{title} ({status})" if status else title
         key = f"page_{page_id}"
         name_map[key] = title
-        buttons.append(_btn_select(label, key))
+
+        # exclude 매칭 시 disabled
+        is_excluded = (
+            exclude_field
+            and str(p.get(exclude_field, "")).upper() == str(exclude_value).upper()
+        )
+        if is_excluded:
+            buttons.append({"type": "select", "label": f"{label} — {exclude_reason}", "value": key, "disabled": True})
+        else:
+            buttons.append(_btn_select(label, key))
+            selectable_count += 1
+
+    if selectable_count == 0:
+        state.reset()
+        master_name = state.selections.get("master_name", "")
+        return f"{master_name}에 {exclude_reason} 상태가 아닌 상품페이지가 없습니다.", [], "error"
+
     buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
 
@@ -614,7 +653,7 @@ def _run_select_product(state: WizardState, step_def: StepDefinition) -> tuple[s
     page_id = state.selections["page_id"]
 
     try:
-        products = get_product_list_by_page(page_id=page_id)
+        products = get_product_list_by_page(product_page_id=page_id)
         product_list = products if isinstance(products, list) else products.get("products", [])
     except Exception:
         product_list = []
@@ -624,19 +663,50 @@ def _run_select_product(state: WizardState, step_def: StepDefinition) -> tuple[s
         page_title = state.selections.get("page_title", "")
         return f"{page_title}에 상품 옵션이 없습니다.", [], "error"
 
+    # exclude 설정
+    exclude_field = None
+    exclude_value = None
+    exclude_reason = ""
+    if step_def.exclude:
+        exclude_field = step_def.exclude.get("field")
+        exclude_value = step_def.exclude.get("value")
+        exclude_reason = step_def.exclude.get("reason", "선택 불가")
+
     name_map = {}
     buttons = []
+    selectable_count = 0
     for p in product_list:
-        prod_id = str(p.get("id", ""))
+        prod_id = str(p.get("productId", p.get("id", "")))
         name = p.get("name", p.get("title", f"상품 {prod_id}"))
-        display = p.get("displayStatus", p.get("status", ""))
+        display = p.get("isDisplay")
+        display_label = "공개" if display else "비공개" if display is not None else ""
         price = p.get("price", "")
-        label = f"{name} ({display})" if display else name
+        label = f"{name} ({display_label})" if display_label else name
         if price:
             label += f" — {price:,}원" if isinstance(price, (int, float)) else f" — {price}"
         key = f"product_{prod_id}"
         name_map[key] = name
-        buttons.append(_btn_select(label, key))
+
+        # exclude 매칭 시 disabled
+        is_excluded = False
+        if exclude_field:
+            field_val = p.get(exclude_field)
+            if isinstance(field_val, bool):
+                is_excluded = field_val == (str(exclude_value).lower() == "true")
+            else:
+                is_excluded = str(field_val).upper() == str(exclude_value).upper()
+
+        if is_excluded:
+            buttons.append({"type": "select", "label": f"{label} — {exclude_reason}", "value": key, "disabled": True})
+        else:
+            buttons.append(_btn_select(label, key))
+            selectable_count += 1
+
+    if selectable_count == 0:
+        state.reset()
+        page_title = state.selections.get("page_title", "")
+        return f"{page_title}에 {exclude_reason} 상태가 아닌 상품이 없습니다.", [], "error"
+
     buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
 
