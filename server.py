@@ -57,7 +57,6 @@ from pydantic import BaseModel
 
 from src.agents import create_agent_system, AgentSystem
 from src.memory import create_memory_session, save_turn, get_context_for_prompt, AgentMemory
-from src.vector_router import VectorRouter
 from src.wizard import WizardState, create_wizard, WIZARD_ACTIONS
 from src.context import SessionManager
 from schema.types import build_response, build_error_response, AgentResponse as AgentResponseSchema
@@ -74,7 +73,6 @@ app.add_middleware(
 
 # 세션 관리 — 단일 매니저로 통합
 _sm = SessionManager()
-_vector_router = VectorRouter()
 _DEFAULT_SESSION = "default"
 
 
@@ -243,49 +241,18 @@ def _try_parse_agent_response(text: str) -> dict | None:
     return None
 
 
-def _call_executor_direct(message: str, system: AgentSystem) -> tuple[str, list, str]:
-    """오케스트레이터 없이 executor 직접 호출."""
-    from src.agents.response import ExecutorOutput, AgentResponse, render_response
-    from src.agents.executor import get_last_harness_response
-
-    system.executor(message)
-
-    # request_action이 호출되었으면 harness 원본 응답을 직접 반환
-    harness_resp = get_last_harness_response()
-    if harness_resp:
-        parsed = json.loads(harness_resp)
-        return parsed.get("message", ""), parsed.get("buttons", []), parsed.get("mode", "execute")
-
-    # harness 미경유 → 기존 경로 (structured_output 또는 텍스트)
-    try:
-        output = system.executor.structured_output(ExecutorOutput, "위 결과를 response_type, summary, data로 정리해줘")
-        resp = AgentResponse.from_executor_output(output)
-        msg, buttons, mode = render_response(resp)
-        return msg, buttons, mode
-    except Exception as e:
-        print(f"⚠️ structured_output 실패: {e}")
-        fallback = _extract_text(system.executor.messages[-1] if system.executor.messages else {})
-        return fallback or str(e), [], "error"
-
-
-def _call_domain_direct(message: str, system: AgentSystem) -> tuple[str, list, str]:
-    """오케스트레이터 없이 domain 직접 호출."""
-    result = system.domain(message)
-    return _extract_text(result), [], "domain"
-
-
 _FOLLOWUP_PATTERNS = re.compile(r'(고쳐|해결해|수정해|변경해|고쳐줘|해결해줘|수정해줘|변경해줘|해결|수정)', re.IGNORECASE)
 
 
 def _is_diagnose_followup(message: str, session_ctx) -> bool:
     """진단 후 후속 요청인지 감지."""
-    if not hasattr(session_ctx, 'last_diagnose_resolves') or not session_ctx.last_diagnose_resolves:
+    if not session_ctx.last_diagnose_resolves:
         return False
     return bool(_FOLLOWUP_PATTERNS.search(message))
 
 
 def _handle_message(message: str, session_id: str, context: dict | None = None) -> dict:
-    """벡터 라우터 → 오케스트레이터 LLM fallback."""
+    """오케스트레이터를 통한 메시지 처리."""
     mem = _get_memory(session_id)
     print(f"📥 msg='{message[:50]}' session={session_id}")
 
@@ -322,27 +289,7 @@ def _handle_message(message: str, session_id: str, context: dict | None = None) 
     memory_context = get_context_for_prompt(mem, message)
     system = _get_system(session_id, memory_context)
 
-    # 3. 벡터 라우터 시도 (오케스트레이터 LLM 스킵)
-    route, similarity, matched = _vector_router.classify(message)
-    if route:
-        print(f"📎 벡터 라우팅: {route} (유사도 {similarity:.3f}, 매칭: '{matched[:30]}')")
-        if route == "executor":
-            msg, buttons, mode = _call_executor_direct(message, system)
-        elif route == "domain":
-            msg, buttons, mode = _call_domain_direct(message, system)
-        else:  # reject
-            msg = "죄송합니다, 상품 세팅 관련 요청만 도와드릴 수 있습니다."
-            buttons, mode = [], "reject"
-
-        # harness 사이드채널 체크 (LLM이 구조화 응답을 요약했을 때 원본 복원)
-        msg, buttons, mode = _check_harness_override(msg, buttons, mode)
-        save_turn(mem, "assistant", msg[:500])
-        _store_diagnose_resolves(session_id, mode, msg, buttons)
-        print(f"📋 응답: mode={mode} buttons={len(buttons)} msg={msg[:100]}")
-        return _to_response(msg, buttons, mode)
-
-    # 4. 벡터 유사도 부족 → 오케스트레이터 LLM fallback
-    print(f"📎 벡터 유사도 부족 ({similarity:.3f}) → 오케스트레이터 fallback")
+    # 3. 오케스트레이터를 통한 라우팅 및 처리
     result = system.orchestrator(message)
     result_text = _extract_text(result)
 
