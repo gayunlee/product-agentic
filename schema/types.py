@@ -52,6 +52,7 @@ class AgentButton(BaseModel):
 
     # 선택적
     description: str | None = None
+    disabled: bool = False
 
 
 # ─── Step Progress ───

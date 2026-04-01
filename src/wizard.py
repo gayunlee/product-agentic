@@ -587,165 +587,160 @@ class WizardState:
 # ─── 스텝 러너 ───
 
 
-def _run_select_master(state: WizardState, step_def: StepDefinition) -> tuple[str, list[dict], str]:
-    """클럽 선택."""
+# ─── 선택 스텝 설정 테이블 ───
+
+# 각 선택 스텝 타입별로 다른 부분만 설정으로 분리.
+# 공통 로직은 _run_select_generic()에서 처리.
+
+def _fetch_masters(state: WizardState) -> list[dict]:
+    result = search_masters(search_keyword="")
+    items = result.get("masters", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+    items.sort(key=lambda m: m.get("name", ""))
+    return items[:30]
+
+def _fetch_pages(state: WizardState) -> list[dict]:
+    pages = get_product_page_list(master_id=state.selections["master_cms_id"])
+    return pages if isinstance(pages, list) else pages.get("pages", [])
+
+def _fetch_products(state: WizardState) -> list[dict]:
+    products = get_product_list_by_page(product_page_id=state.selections["page_id"])
+    return products if isinstance(products, list) else products.get("products", [])
+
+
+def _label_master(item: dict) -> tuple[str, str, str]:
+    """(id, name, label) 반환."""
+    cms_id = str(item.get("cmsId", ""))
+    name = item.get("name", f"클럽 {cms_id}")
+    public_type = item.get("publicType", "")
+    label = name if public_type == "PUBLIC" else f"{name} ({public_type})"
+    return cms_id, name, label
+
+def _label_page(item: dict) -> tuple[str, str, str]:
+    page_id = str(item.get("id", item.get("code", "")))
+    title = item.get("title", f"페이지 {page_id}")
+    status = item.get("status", "")
+    label = f"{title} ({status})" if status else title
+    return page_id, title, label
+
+def _label_product(item: dict) -> tuple[str, str, str]:
+    prod_id = str(item.get("productId", item.get("id", "")))
+    name = item.get("name", item.get("title", f"상품 {prod_id}"))
+    display = item.get("isDisplay")
+    display_label = "공개" if display else "비공개" if display is not None else ""
+    price = item.get("price", "")
+    label = f"{name} ({display_label})" if display_label else name
+    if price:
+        label += f" — {price:,}원" if isinstance(price, (int, float)) else f" — {price}"
+    return prod_id, name, label
+
+
+@dataclass
+class _SelectConfig:
+    fetch: Any          # (state) → list[dict]
+    labeler: Any        # (item) → (id, name, label)
+    prefix: str         # "master_", "page_", "product_"
+    names_key: str      # selections에 저장할 이름 매핑 키
+    empty_msg: str      # 목록 비었을 때 메시지 템플릿 ({context} 치환)
+    context_key: str    # empty_msg의 {context}에 넣을 selections 키
+    is_first: bool      # 첫 스텝 여부 (에러 시 reset vs 이전 스텝 복귀)
+
+
+SELECT_CONFIGS: dict[str, _SelectConfig] = {
+    "select_master": _SelectConfig(
+        fetch=_fetch_masters,
+        labeler=_label_master,
+        prefix="master_",
+        names_key="_master_names",
+        empty_msg="오피셜클럽을 찾을 수 없습니다. 토큰이 만료되었을 수 있습니다.",
+        context_key="",
+        is_first=True,
+    ),
+    "select_page": _SelectConfig(
+        fetch=_fetch_pages,
+        labeler=_label_page,
+        prefix="page_",
+        names_key="_page_names",
+        empty_msg="{context} 오피셜클럽에 상품페이지가 없습니다.\n\n다른 오피셜클럽을 선택하세요.",
+        context_key="master_name",
+        is_first=False,
+    ),
+    "select_product": _SelectConfig(
+        fetch=_fetch_products,
+        labeler=_label_product,
+        prefix="product_",
+        names_key="_product_names",
+        empty_msg="{context}에 상품 옵션이 없습니다.\n\n다른 페이지를 선택하세요.",
+        context_key="page_title",
+        is_first=False,
+    ),
+}
+
+
+def _check_excluded(item: dict, step_def: StepDefinition) -> bool:
+    """항목이 exclude 조건에 매칭되는지 확인."""
+    if not step_def.exclude:
+        return False
+    field = step_def.exclude.get("field")
+    value = step_def.exclude.get("value")
+    if not field:
+        return False
+    field_val = item.get(field)
+    if isinstance(field_val, bool):
+        return field_val == (str(value).lower() == "true")
+    return str(field_val or "").upper() == str(value).upper()
+
+
+def _run_select_generic(state: WizardState, step_def: StepDefinition) -> tuple[str, list[dict], str]:
+    """모든 선택 스텝의 공통 로직."""
+    config = SELECT_CONFIGS[step_def.type]
+    exclude_reason = step_def.exclude.get("reason", "선택 불가") if step_def.exclude else ""
+
+    # 1. 데이터 조회
     try:
-        result = search_masters(search_keyword="")
-        masters = result.get("masters", []) if isinstance(result, dict) else result if isinstance(result, list) else []
+        items = config.fetch(state)
     except Exception:
-        masters = []
+        items = []
 
-    if not masters:
-        state.reset()
-        return "오피셜클럽을 찾을 수 없습니다. 토큰이 만료되었을 수 있습니다.", [], "error"
-
-    masters.sort(key=lambda m: m.get("name", ""))
-
-    name_map = {}
-    buttons = []
-    for m in masters[:30]:
-        cms_id = str(m.get("cmsId", ""))
-        name = m.get("name", f"클럽 {cms_id}")
-        public_type = m.get("publicType", "")
-        label = name if public_type == "PUBLIC" else f"{name} ({public_type})"
-        key = f"master_{cms_id}"
-        name_map[key] = name
-        buttons.append(_btn_select(label, key))
-    buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
-
-    state.selections["_master_names"] = name_map
-    msg = state._format(step_def.message) if step_def.message else f"**{state.schema.label}** — 오피셜클럽을 선택하세요."
-    return msg, buttons, "wizard"
-
-
-def _run_select_page(state: WizardState, step_def: StepDefinition) -> tuple[str, list[dict], str]:
-    """페이지 선택."""
-    cms_id = state.selections["master_cms_id"]
-
-    try:
-        pages = get_product_page_list(master_id=cms_id)
-        page_list = pages if isinstance(pages, list) else pages.get("pages", [])
-    except Exception:
-        page_list = []
-
-    if not page_list:
-        # reset하지 않고 마스터 선택으로 되돌림 — 다른 클럽 선택 가능
+    # 2. 빈 목록 처리
+    if not items:
+        context = state.selections.get(config.context_key, "") if config.context_key else ""
+        msg = config.empty_msg.format(context=context)
+        if config.is_first:
+            state.reset()
+            return msg, [], "error"
         state.current_step_index = max(0, state.current_step_index - 1)
-        master_name = state.selections.get("master_name", "")
-        msg = f"{master_name} 오피셜클럽에 상품페이지가 없습니다.\n\n다른 오피셜클럽을 선택하세요."
         return state._run_current_step_with_warning(msg)
 
-    # exclude 설정: 이미 목표 상태인 항목은 disabled 처리
-    exclude_field = None
-    exclude_value = None
-    exclude_reason = ""
-    if step_def.exclude:
-        exclude_field = step_def.exclude.get("field")
-        exclude_value = step_def.exclude.get("value")
-        exclude_reason = step_def.exclude.get("reason", "선택 불가")
-
+    # 3. 버튼 생성 (exclude 필터링 포함)
     name_map = {}
     buttons = []
     selectable_count = 0
-    for p in page_list:
-        page_id = str(p.get("id", p.get("code", "")))
-        title = p.get("title", f"페이지 {page_id}")
-        status = p.get("status", "")
-        label = f"{title} ({status})" if status else title
-        key = f"page_{page_id}"
-        name_map[key] = title
+    for item in items:
+        item_id, name, label = config.labeler(item)
+        key = f"{config.prefix}{item_id}"
+        name_map[key] = name
 
-        # exclude 매칭 시 disabled
-        is_excluded = (
-            exclude_field
-            and str(p.get(exclude_field, "")).upper() == str(exclude_value).upper()
-        )
-        if is_excluded:
+        if _check_excluded(item, step_def):
             buttons.append({"type": "select", "label": f"{label} — {exclude_reason}", "value": key, "disabled": True})
         else:
             buttons.append(_btn_select(label, key))
             selectable_count += 1
 
-    if selectable_count == 0:
+    # 4. 전부 excluded → 이전 스텝
+    if selectable_count == 0 and not config.is_first:
+        context = state.selections.get(config.context_key, "")
+        msg = f"{context}에 {exclude_reason} 상태가 아닌 항목이 없습니다.\n\n다른 항목을 선택하세요."
         state.current_step_index = max(0, state.current_step_index - 1)
-        master_name = state.selections.get("master_name", "")
-        msg = f"{master_name}에 {exclude_reason} 상태가 아닌 상품페이지가 없습니다.\n\n다른 오피셜클럽을 선택하세요."
         return state._run_current_step_with_warning(msg)
 
-    buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
+    # 5. 네비게이션 버튼
+    if not config.is_first:
+        buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
     buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
 
-    state.selections["_page_names"] = name_map
-    msg = state._format(step_def.message) if step_def.message else f"**{state.schema.label}** — 상품페이지를 선택하세요."
-    return msg, buttons, "wizard"
-
-
-def _run_select_product(state: WizardState, step_def: StepDefinition) -> tuple[str, list[dict], str]:
-    """상품 선택."""
-    page_id = state.selections["page_id"]
-
-    try:
-        products = get_product_list_by_page(product_page_id=page_id)
-        product_list = products if isinstance(products, list) else products.get("products", [])
-    except Exception:
-        product_list = []
-
-    if not product_list:
-        state.current_step_index = max(0, state.current_step_index - 1)
-        page_title = state.selections.get("page_title", "")
-        msg = f"{page_title}에 상품 옵션이 없습니다.\n\n다른 페이지를 선택하세요."
-        return state._run_current_step_with_warning(msg)
-
-    # exclude 설정
-    exclude_field = None
-    exclude_value = None
-    exclude_reason = ""
-    if step_def.exclude:
-        exclude_field = step_def.exclude.get("field")
-        exclude_value = step_def.exclude.get("value")
-        exclude_reason = step_def.exclude.get("reason", "선택 불가")
-
-    name_map = {}
-    buttons = []
-    selectable_count = 0
-    for p in product_list:
-        prod_id = str(p.get("productId", p.get("id", "")))
-        name = p.get("name", p.get("title", f"상품 {prod_id}"))
-        display = p.get("isDisplay")
-        display_label = "공개" if display else "비공개" if display is not None else ""
-        price = p.get("price", "")
-        label = f"{name} ({display_label})" if display_label else name
-        if price:
-            label += f" — {price:,}원" if isinstance(price, (int, float)) else f" — {price}"
-        key = f"product_{prod_id}"
-        name_map[key] = name
-
-        # exclude 매칭 시 disabled
-        is_excluded = False
-        if exclude_field:
-            field_val = p.get(exclude_field)
-            if isinstance(field_val, bool):
-                is_excluded = field_val == (str(exclude_value).lower() == "true")
-            else:
-                is_excluded = str(field_val).upper() == str(exclude_value).upper()
-
-        if is_excluded:
-            buttons.append({"type": "select", "label": f"{label} — {exclude_reason}", "value": key, "disabled": True})
-        else:
-            buttons.append(_btn_select(label, key))
-            selectable_count += 1
-
-    if selectable_count == 0:
-        state.current_step_index = max(0, state.current_step_index - 1)
-        page_title = state.selections.get("page_title", "")
-        msg = f"{page_title}에 {exclude_reason} 상태가 아닌 상품이 없습니다.\n\n다른 페이지를 선택하세요."
-        return state._run_current_step_with_warning(msg)
-
-    buttons.append({"type": "action", "label": "← 이전", "action": "back", "variant": "ghost"})
-    buttons.append({"type": "action", "label": "취소", "action": "cancel", "variant": "ghost"})
-
-    state.selections["_product_names"] = name_map
-    msg = state._format(step_def.message) if step_def.message else f"**{state.schema.label}** — 상품을 선택하세요."
+    # 6. 이름 매핑 저장
+    state.selections[config.names_key] = name_map
+    msg = state._format(step_def.message) if step_def.message else f"**{state.schema.label}** — 항목을 선택하세요."
     return msg, buttons, "wizard"
 
 
@@ -780,9 +775,9 @@ def _run_execute(state: WizardState, step_def: StepDefinition) -> tuple[str, lis
 
 
 STEP_RUNNERS = {
-    "select_master": _run_select_master,
-    "select_page": _run_select_page,
-    "select_product": _run_select_product,
+    "select_master": _run_select_generic,
+    "select_page": _run_select_generic,
+    "select_product": _run_select_generic,
     "confirm": _run_confirm,
     "execute": _run_execute,
 }

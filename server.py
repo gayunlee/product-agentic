@@ -798,7 +798,7 @@ function renderResponse(data) {
     data.buttons.forEach((b, i) => {
       const cls = b.action === 'navigate' ? 'navigate' : (b.action === 'cancel' ? 'danger' : '');
       if (b.disabled) {
-        html += `<button class="action-btn" disabled style="opacity:0.5;cursor:not-allowed;text-decoration:line-through;">${b.label || b.action}</button>`;
+        html += `<span class="action-btn" style="opacity:0.4;cursor:not-allowed;text-decoration:line-through;pointer-events:none;display:inline-block;">${b.label || b.action}</span>`;
       } else {
         html += `<button class="action-btn ${cls}" onclick='clickButton(${JSON.stringify(b)})'>${b.label || b.action}</button>`;
       }
