@@ -9,6 +9,34 @@
 #   5. confirmation 생성 → 유저 확인
 #   6. API 실행
 #   7. post_action 검증
+#
+# slot_resolvers: 슬롯이 부족할 때 자동으로 목록을 조회해서 선택지를 반환.
+#   requires: 이 슬롯이 있어야 resolve 가능
+#   api: 조회 API 함수명 (_get_read_api_map 참조)
+#   params: API 파라미터 (템플릿 치환)
+#   list_key: API 응답에서 목록을 꺼낼 키 (없으면 응답 자체가 리스트)
+#   display: 버튼 라벨 템플릿
+#   value_key: 결과에서 value로 쓸 키
+#   message: 선택 요청 메시지 템플릿
+
+slot_resolvers:
+  page_id:
+    requires: master_cms_id
+    api: get_product_page_list
+    params: { master_id: "{master_cms_id}" }
+    list_key: pages
+    display: "{title} ({status})"
+    value_key: id
+    message: "📦 **{master_name}** 오피셜클럽의 상품페이지입니다.\n어떤 상품페이지를 처리할까요?"
+
+  product_id:
+    requires: page_id
+    api: get_product_list_by_page
+    params: { product_page_id: "{page_id}" }
+    list_key: products
+    display: "{name} ({display_status})"
+    value_key: id
+    message: "📦 **{page_title}** 상품페이지의 상품입니다.\n어떤 상품을 처리할까요?"
 
 actions:
   update_product_display:
