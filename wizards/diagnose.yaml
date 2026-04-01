@@ -21,22 +21,26 @@ steps:
       fail_links:
         master_public:
           label: 오피셜클럽 설정
-          url: "/master/{master_cms_id}"
+          page_key: official_club
+          params: {masterId: "{master_cms_id}"}
         main_product_active:
           label: 메인 상품 설정
-          url: "/product/main"
+          page_key: main_product
         page_active:
           label: 상품 페이지 목록
-          url: "/product/page/list"
+          page_key: product_page_list
         weblink_set:
           label: 웹링크 설정
-          url: "/master/{master_cms_id}"
+          page_key: official_club
+          params: {masterId: "{master_cms_id}"}
         weblink_target_valid:
           label: 웹링크 설정
-          url: "/master/{master_cms_id}"
+          page_key: official_club
+          params: {masterId: "{master_cms_id}"}
         weblink_target_stable:
           label: 웹링크 설정
-          url: "/master/{master_cms_id}"
+          page_key: official_club
+          params: {masterId: "{master_cms_id}"}
       default_button:
         label: 설정 관리
-        url: "/product/page/list"
+        page_key: product_page_list

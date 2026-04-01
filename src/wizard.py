@@ -24,6 +24,20 @@ from src.tools.admin_api import (
 from src.agents.validator import check_cascading_effects
 
 
+def _resolve_btn_url(btn: dict, state: "WizardState") -> dict:
+    """버튼의 page_key → 실제 URL로 resolve. url 직접 지정도 지원(하위 호환)."""
+    if "page_key" in btn:
+        page_key = btn.pop("page_key")
+        btn_params = btn.pop("params", {})
+        # params 값의 템플릿 치환
+        resolved_params = {k: state._format(str(v)) for k, v in btn_params.items()}
+        url, _ = resolve_page_url(page_key, **resolved_params)
+        btn["url"] = url
+    elif "url" in btn:
+        btn["url"] = state._format(btn["url"])
+    return btn
+
+
 # ─── YAML 스키마 ───
 
 
@@ -256,6 +270,15 @@ def _render_launch_report(data: dict, config: RenderConfig, selections: dict) ->
     return msg, buttons, "launch_check"
 
 
+def _resolve_link(link: dict, fmt: dict) -> str:
+    """fail_link/default_button의 URL resolve. page_key 또는 url 지원."""
+    if "page_key" in link:
+        params = {k: v.format(**fmt) for k, v in link.get("params", {}).items()}
+        url, _ = resolve_page_url(link["page_key"], **params)
+        return url
+    return link.get("url", "").format(**fmt)
+
+
 def _build_fail_buttons(checks: list, config: RenderConfig, selections: dict) -> list[dict]:
     """실패 항목에 대한 navigate 버튼 생성 (YAML fail_links 기반)."""
     fmt = {**selections}
@@ -269,7 +292,7 @@ def _build_fail_buttons(checks: list, config: RenderConfig, selections: dict) ->
             condition = c.get("condition", "")
             link = config.fail_links.get(condition)
             if link:
-                url = link["url"].format(**fmt)
+                url = _resolve_link(link, fmt)
                 buttons.append(_btn_navigate(link["label"], url))
 
     # 중복 제거
@@ -283,7 +306,7 @@ def _build_fail_buttons(checks: list, config: RenderConfig, selections: dict) ->
 
     # 버튼 없으면 기본 버튼
     if not unique and config.default_button:
-        url = config.default_button["url"].format(**fmt)
+        url = _resolve_link(config.default_button, fmt)
         unique.append(_btn_navigate(config.default_button["label"], url))
 
     return unique
@@ -536,11 +559,10 @@ class WizardState:
                 buttons = []
                 for btn_def in step_def.done_buttons:
                     btn = dict(btn_def)
-                    if "url" in btn:
-                        btn["url"] = self._format(btn["url"])
+                    btn = _resolve_btn_url(btn, self)
                     buttons.append(btn)
                 if not buttons:
-                    buttons = [_btn_navigate("결과 확인", "/product/page/list")]
+                    buttons = [_btn_navigate("결과 확인", resolve_page_url("product_page_list")[0])]
                 return msg, buttons, "done"
             except Exception as e:
                 self.current_step_index = max(0, self.current_step_index - 1)

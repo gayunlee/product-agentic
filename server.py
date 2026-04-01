@@ -680,6 +680,11 @@ function addMsg(text, cls) {
   return div;
 }
 
+function buildContext() {
+  const token = getToken();
+  return token ? { token } : undefined;
+}
+
 // ── 모드 인디케이터 ──
 async function loadMode() {
   try {
@@ -721,7 +726,7 @@ async function startWizard(action) {
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: '', wizard_action: action })
+      body: JSON.stringify({ message: '', wizard_action: action, context: buildContext() })
     });
     const data = await res.json();
     loading.remove();
@@ -746,7 +751,7 @@ async function clickButton(btn) {
   addMsg(`🔘 ${btn.label || btn.action}`, 'user');
   const loading = addMsg('처리 중...', 'agent loading');
   try {
-    const body = { message: '', button: btn };
+    const body = { message: '', button: btn, context: buildContext() };
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -821,8 +826,7 @@ async function send() {
   }, 3000);
   try {
     const token = getToken();
-    const body = { message: text };
-    if (token) body.context = { token };
+    const body = { message: text, context: buildContext() };
     const res = await fetch('/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

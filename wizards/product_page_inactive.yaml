@@ -35,5 +35,6 @@ steps:
     done_buttons:
       - type: navigate
         label: 결과 확인
-        url: "/product/page/{page_id}"
+        page_key: product_page_detail
+        params: {id: "{page_id}"}
         clickable: always

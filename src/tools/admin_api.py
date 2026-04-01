@@ -14,6 +14,8 @@ ADMIN_BASE = os.environ.get("ADMIN_API_BASE_URL", "")
 ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "")
 PARTNER_BASE = os.environ.get("PARTNER_API_BASE_URL", "")
 PARTNER_TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
+# 관리자센터 웹 URL (navigate 버튼용). 환경변수로 도메인 전환 가능
+ADMIN_WEB_BASE = os.environ.get("ADMIN_WEB_BASE_URL", "https://admin.us-insight.com")
 PLACEHOLDER_IMAGE = "https://placehold.co/990x1100/e8e8e8/999?text=PLACEHOLDER"
 MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
 
@@ -623,13 +625,18 @@ PAGE_MAP = {
 def resolve_page_url(page_key: str, **params) -> tuple[str, str]:
     """PAGE_MAP에서 URL과 label을 가져오고 params를 적용합니다.
 
+    외부 URL(http로 시작)은 그대로, 내부 경로는 ADMIN_WEB_BASE를 prefix로 붙입니다.
+
     Returns:
-        (url, label)
+        (full_url, label)
     """
     entry = PAGE_MAP.get(page_key, {"url": "/product", "label": page_key})
     url = entry["url"]
     for key, value in params.items():
         url = url.replace(f"{{{key}}}", str(value))
+    # 외부 URL은 그대로, 내부 경로는 도메인 붙이기
+    if not url.startswith("http"):
+        url = f"{ADMIN_WEB_BASE}{url}"
     return url, entry["label"]
 
 
