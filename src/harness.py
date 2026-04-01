@@ -90,6 +90,10 @@ class ActionHarness:
         # 1. 필수 슬롯 검증 (None만 미충족, False/0은 유효값)
         missing = [s for s in action_def.get("required_slots", []) if slots.get(s) is None]
         if missing:
+            # 슬롯 불완전 → 목록 조회해서 선택지 반환 시도
+            assist = self._assist_missing_slots(action_id, missing, slots)
+            if assist:
+                return assist
             return self._error(
                 f"정보가 부족합니다: {', '.join(missing)}",
                 data={"missing_slots": missing},
@@ -282,6 +286,80 @@ class ActionHarness:
         }
 
     # ── 내부 헬퍼 ──
+
+    def _assist_missing_slots(
+        self, action_id: str, missing: list[str], slots: dict
+    ) -> str | None:
+        """슬롯이 부족할 때 목록을 조회해서 선택 버튼을 반환.
+
+        반환값이 None이면 기존 에러 메시지 사용.
+        """
+        read_api = _get_read_api_map()
+        master_cms_id = slots.get("master_cms_id")
+
+        # page_id가 없고 master_cms_id가 있으면 → 상품페이지 목록 반환
+        if "page_id" in missing and master_cms_id:
+            try:
+                pages = read_api["get_product_page_list"](master_id=str(master_cms_id))
+                page_list = pages if isinstance(pages, list) else pages.get("pages", [])
+                if not page_list:
+                    return None  # 목록이 비어있으면 기존 에러로 fallback
+                master_name = slots.get("master_name", "")
+                buttons = [
+                    {
+                        "type": "select",
+                        "label": f"{p.get('title', '제목 없음')} ({p.get('status', '')})",
+                        "value": str(p.get("id", "")),
+                        "variant": "secondary",
+                        "clickable": "once",
+                    }
+                    for p in page_list
+                ]
+                return json.dumps(
+                    {
+                        "__agent_response__": True,
+                        "message": f"📦 **{master_name}** 오피셜클럽의 상품페이지 {len(page_list)}개입니다.\n어떤 상품페이지를 처리할까요?",
+                        "buttons": buttons,
+                        "mode": "select",
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception:
+                return None
+
+        # product_id가 없고 page_id가 있으면 → 상품 목록 반환
+        if "product_id" in missing and slots.get("page_id"):
+            try:
+                products = read_api["get_product_list_by_page"](
+                    product_page_id=str(slots["page_id"])
+                )
+                prod_list = products if isinstance(products, list) else products.get("products", [])
+                if not prod_list:
+                    return None
+                buttons = [
+                    {
+                        "type": "select",
+                        "label": f"{p.get('name', '이름 없음')} ({'공개' if p.get('isDisplay') else '비공개'})",
+                        "value": str(p.get("id", "")),
+                        "variant": "secondary",
+                        "clickable": "once",
+                    }
+                    for p in prod_list
+                ]
+                page_title = slots.get("page_title", "")
+                return json.dumps(
+                    {
+                        "__agent_response__": True,
+                        "message": f"📦 **{page_title}** 상품페이지의 상품 {len(prod_list)}개입니다.\n어떤 상품을 처리할까요?",
+                        "buttons": buttons,
+                        "mode": "select",
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception:
+                return None
+
+        return None
 
     def _error(self, message: str, data: dict | None = None) -> str:
         resp = AgentResponse(
