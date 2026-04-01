@@ -125,18 +125,36 @@ def _inject_token(context: dict | None):
 import random
 
 _PROGRESS_FALLBACKS = [
-    "상품 세팅 살펴보는 중...",
-    "데이터 뒤적뒤적...",
-    "꼼꼼히 체크하는 중...",
-    "설정값 확인하는 중...",
-    "열심히 일하는 중...",
-    "열심히 찾고 있어요...",
-    "세팅 분석 중...",
-    "조금만 기다려주세요...",
-    "정보 수집 중...",
-    "관리자센터 탐험 중...",
-    "노출 조건 확인 중...",
-    "거의 다 됐어요...",
+    "Thinking...",
+    "Buzzing...",
+    "Crunching...",
+    "Hmm...",
+    "Almost there...",
+    "Working on it...",
+    "One moment...",
+    "Brewing...",
+    "Cooking...",
+    "Juggling bits...",
+    "Connecting dots...",
+    "On it...",
+    "Hang tight...",
+    "Warming up...",
+    "Digging in...",
+    "Spinning gears...",
+    "Shuffling papers...",
+    "Doing the thing...",
+    "Hold on...",
+    "Wrangling data...",
+    "Poking around...",
+    "Rummaging...",
+    "Figuring it out...",
+    "Bear with me...",
+    "Chugging along...",
+    "Tinkering...",
+    "Percolating...",
+    "Pondering...",
+    "Noodling...",
+    "Assembling...",
 ]
 
 _ACTION_LABELS = {
@@ -781,12 +799,42 @@ function renderResponse(data) {
 }
 
 const progressMsgs = [
-  '🤔 생각하는 중...',
-  '🔍 정보 조회 중...',
-  '📚 도메인 지식 검색 중...',
-  '✅ 검증 중...',
-  '📝 답변 작성 중...',
+  'Thinking...',
+  'Buzzing...',
+  'Crunching...',
+  'Hmm...',
+  'Almost there...',
+  'Working on it...',
+  'One moment...',
+  'Brewing...',
+  'Cooking...',
+  'Juggling bits...',
+  'Connecting dots...',
+  'On it...',
+  'Hang tight...',
+  'Warming up...',
+  'Digging in...',
+  'Spinning gears...',
+  'Shuffling papers...',
+  'Doing the thing...',
+  'Hold on...',
+  'Wrangling data...',
+  'Poking around...',
+  'Rummaging...',
+  'Figuring it out...',
+  'Bear with me...',
+  'Chugging along...',
+  'Tinkering...',
+  'Percolating...',
+  'Pondering...',
+  'Noodling...',
+  'Assembling...',
 ];
+function randomProgress(exclude) {
+  let msg;
+  do { msg = progressMsgs[Math.floor(Math.random() * progressMsgs.length)]; } while (msg === exclude && progressMsgs.length > 1);
+  return msg;
+}
 
 let sending = false;
 async function send() {
@@ -798,12 +846,12 @@ async function send() {
   disablePreviousButtons();
   addMsg(text, 'user');
   sendBtn.disabled = true;
-  const loading = addMsg(progressMsgs[0], 'agent loading');
-  let step = 0;
+  let currentMsg = randomProgress('');
+  const loading = addMsg(currentMsg, 'agent loading');
   const progressInterval = setInterval(() => {
-    step = (step + 1) % progressMsgs.length;
-    loading.innerHTML = progressMsgs[step];
-  }, 3000);
+    currentMsg = randomProgress(currentMsg);
+    loading.innerHTML = currentMsg;
+  }, 2000);
   try {
     const token = getToken();
     const body = { message: text, context: buildContext() };

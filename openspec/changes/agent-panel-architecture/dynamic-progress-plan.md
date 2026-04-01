@@ -1,60 +1,44 @@
-# 진행 상황 메시지 — 랜덤 펀 메시지
+# 진행 상황 메시지
 
-## 문제
+## 현재 상태 (2026-04-01 구현 완료)
 
-현재 `TOOL_PROGRESS` 딕셔너리가 tool_name → 고정 문자열 매핑이라:
-- 실제 파라미터와 무관한 메시지 표시 ("도메인 지식 검색 중" — 실제로는 검색 안 함)
-- 모든 호출이 동일 메시지 → 단계 전환이 안 느껴짐
-- 잘못된 정보를 주느니 차라리 안 주는 게 나음
+### 문제
+- `TOOL_PROGRESS` 고정 딕셔너리 → "도메인 지식 검색 중" 같은 부정확한 메시지
+- non-streaming `/chat` 엔드포인트라 서버 progress가 프론트에 전달 안 됨
 
-## 제안
+### 해결 (임시)
+프론트에서 2초마다 랜덤 영어 메시지 로테이션 (Claude Code 스타일).
+서버가 실제로 뭘 하는지와 무관한 가벼운 메시지.
 
-Tool 호출마다 **랜덤 펀 메시지**를 표시. Claude Code의 jazzing/buzzing 스타일.
-매 tool 호출마다 다른 메시지가 나오므로 단계 전환이 느껴짐.
-
-### 예시 메시지 풀
-
-```python
-PROGRESS_MESSAGES = [
-    "상품 세팅 살펴보는 중...",
-    "데이터 뒤적뒤적...",
-    "관리자센터 탐험 중...",
-    "설정값 확인하는 중...",
-    "꼼꼼히 체크하는 중...",
-    "정보 수집 중...",
-    "열심히 일하는 중...",
-    "거의 다 됐어요...",
-    "조금만 기다려주세요...",
-    "열심히 찾고 있어요...",
-    "세팅 분석 중...",
-    "노출 조건 확인 중...",
-]
+```
+Thinking... → Buzzing... → Rummaging... → Almost there...
 ```
 
-## 구현
+- `server.py` 인라인 HTML: `progressMsgs` 배열 + `randomProgress()` + `setInterval(2000)`
+- `web/src/useAgentChat.ts`: `LOADING_MESSAGES` + `getRandomLoadingText()` + `setInterval(2000)`
+- 서버 `_build_progress()`: 명확한 tool(search_masters, request_action 등)은 구체적, 나머지 랜덤 fallback (스트리밍 전환 시 사용)
 
-### 서버 (`server.py`)
+---
 
-```python
-import random
+## 후속: 스트리밍 전환 → 진짜 progress 표시
 
-PROGRESS_MESSAGES = [...]  # 위 메시지 풀
+`/chat` → `/chat/stream` (SSE) 전환 시 서버가 tool 호출마다 실시간 progress 전달 가능.
 
-# StreamingCallbackHandler에서:
-progress = random.choice(PROGRESS_MESSAGES)
+### Before (현재)
+```
+프론트 요청 → [Thinking... Buzzing... Rummaging...] → 응답 수신
+                 ↑ 프론트 자체 랜덤 (서버와 무관)
 ```
 
-- 기존 `TOOL_PROGRESS` 딕셔너리 제거
-- tool_name 매핑 불필요 — 랜덤 선택만
-- 연속 같은 메시지 방지: 직전 메시지와 다른 것 선택
+### After (스트리밍 전환 후)
+```
+프론트 요청 → SSE event: "🔍 '조조형우' 검색 중..." → "📦 상품페이지 조회 중..." → 응답 수신
+                 ↑ 서버가 실제 tool 호출 기반으로 전송
+```
 
-### 프론트
-
-변경 불필요. 서버가 보내는 메시지만 바뀜.
-
-## 스코프
-
-- [ ] `PROGRESS_MESSAGES` 리스트 작성
-- [ ] `StreamingCallbackHandler` 수정 (random.choice)
-- [ ] 기존 `TOOL_PROGRESS` 딕셔너리 제거
-- [ ] 연속 중복 방지 로직
+### 스코프
+- [ ] `useAgentChat.ts`에서 `sendMessage` → `streamMessage` 전환
+- [ ] `onProgress` 핸들러로 서버 progress 메시지 표시
+- [ ] 프론트 자체 랜덤 fallback 제거
+- [ ] SSE 이벤트에서 tool_input 접근 가능 여부 확인 (Strands SDK)
+- [ ] 8000 인라인 HTML도 EventSource 기반으로 전환

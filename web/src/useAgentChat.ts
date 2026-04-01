@@ -11,6 +11,47 @@ function createId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
+const LOADING_MESSAGES = [
+  'Thinking...',
+  'Buzzing...',
+  'Crunching...',
+  'Hmm...',
+  'Almost there...',
+  'Working on it...',
+  'One moment...',
+  'Brewing...',
+  'Cooking...',
+  'Juggling bits...',
+  'Connecting dots...',
+  'On it...',
+  'Hang tight...',
+  'Warming up...',
+  'Digging in...',
+  'Spinning gears...',
+  'Shuffling papers...',
+  'Doing the thing...',
+  'Hold on...',
+  'Wrangling data...',
+  'Poking around...',
+  'Rummaging...',
+  'Figuring it out...',
+  'Bear with me...',
+  'Chugging along...',
+  'Tinkering...',
+  'Percolating...',
+  'Pondering...',
+  'Noodling...',
+  'Assembling...',
+]
+
+let _lastLoadingIdx = -1
+function getRandomLoadingText(): string {
+  let idx = Math.floor(Math.random() * LOADING_MESSAGES.length)
+  if (idx === _lastLoadingIdx) idx = (idx + 1) % LOADING_MESSAGES.length
+  _lastLoadingIdx = idx
+  return LOADING_MESSAGES[idx]
+}
+
 function createUserMessage(content: string): ChatMessage {
   return { id: createId(), role: 'user', content }
 }
@@ -60,6 +101,10 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
       setLoading(true)
       setLoadingText('요청 분석 중...')
 
+      const interval = setInterval(() => {
+        setLoadingText(getRandomLoadingText())
+      }, 2000)
+
       try {
         const response = await sendMessage(configRef.current, text)
         handleResponse(response)
@@ -71,6 +116,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
           mode: 'error',
         })
       } finally {
+        clearInterval(interval)
         setLoading(false)
         setLoadingText('')
       }

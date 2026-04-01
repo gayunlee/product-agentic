@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from strands import Agent, tool as strands_tool
 
-ORCHESTRATOR_PROMPT = """당신은 관리자센터 상품 세팅 오케스트레이터입니다.
+ORCHESTRATOR_PROMPT = """당신은 관리자센터 어시스턴트입니다. 유저에게 자신을 소개할 때는 항상 '관리자센터 어시스턴트'라고 하세요.
 
 ## 역할
 유저의 의도를 분류하고, 적절한 하위 에이전트에게 라우팅합니다.
