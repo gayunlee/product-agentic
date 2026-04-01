@@ -96,11 +96,12 @@
 
 ---
 
-## 실행 순서
+## 실행 순서 — 상태 업데이트 (2026-04-01)
 
-1. **P1: 맥락 유지** — context.py + server.py + executor.py (핵심)
-2. **P2: 부분 검색** — admin_api.py (UX 개선)
-3. **P3: 진단 에러 처리** — diagnose_engine.py (데이터 정합성)
-4. **P4: structured_output 에러** — server.py (안정성)
-
-각 단계 후 기존 테스트 212개 + E2E 14개 회귀 검증 필요.
+1. **P1: 맥락 유지** — ✅ 해결
+   - 벡터 라우팅 제거 (오케스트레이터 bypass 경로 삭제)
+   - 태스크 프롬프트 패턴 적용 (O12 규칙: 하위 에이전트에 맥락 포함 태스크 작성)
+   - dead code 정리 (ConversationContext, SessionStore)
+2. **P2: 부분 검색** — ❌ 미착수. admin_api.py의 search_masters가 정확 매칭만 수행
+3. **P3: 진단 에러 처리** — ❌ 미착수. diagnose_engine.py "정상 + 데이터 없음" 모순
+4. **P4: structured_output 에러** — ✅ 자연 해결. _call_executor_direct() 삭제로 structured_output 호출 경로 자체가 제거됨

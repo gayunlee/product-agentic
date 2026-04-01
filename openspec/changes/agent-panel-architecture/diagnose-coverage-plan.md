@@ -74,3 +74,27 @@
 - QA 에이전트: localhost:8001
 - us-plus: localhost:3000 (web-mcp 브랜치)
 - 테스트 대상: 에이전트 테스트 오피셜 클럽, 코드 148 상품페이지
+
+## 사전 작업: 테스트 환경 자동 셋업
+
+현재 테스트 실행 전 수동으로 3개 프로세스를 띄워야 함. 이를 자동화.
+
+### 자동화 대상
+
+1. **us-plus (web-mcp 브랜치)**: `localhost:3000`
+   - web-mcp 브랜치 체크아웃 + dev 서버 시작
+   - Web MCP tool 등록 확인
+
+2. **QA 에이전트 (us-explorer-agent)**: `localhost:8001`
+   - QA 에이전트 서버 시작
+   - Web MCP 연결 확인 (us-plus가 떠있어야)
+
+3. **세팅 에이전트 (us-product-agent)**: `localhost:8000`
+   - 라이브 모드로 서버 시작
+
+### 구현 방향
+
+- 단일 스크립트 (`scripts/start-test-env.sh` 등)로 3개 프로세스 순차 시작
+- 각 서버 health check 후 다음 단계 진행
+- 종료 시 전체 정리 (trap)
+- 또는 docker-compose / tmux 세션으로 관리
