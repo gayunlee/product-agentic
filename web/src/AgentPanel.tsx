@@ -22,6 +22,8 @@ export function AgentPanel({
     loadingText,
     currentMode,
     wizardActions,
+    queueCount,
+    queuedMessages,
     send,
     clickButton,
     startWizardAction,
@@ -47,7 +49,7 @@ export function AgentPanel({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!input.trim() || loading || isWizardMode) return
+    if (!input.trim() || isWizardMode) return
     send(input.trim())
     setInput('')
   }
@@ -206,6 +208,20 @@ export function AgentPanel({
             {loadingText || '처리 중...'}
           </div>
         )}
+        {queuedMessages.length > 0 && queuedMessages.map((msg, i) => (
+          <div key={`q-${i}`} style={{
+            alignSelf: 'flex-end',
+            background: '#e8e8e8',
+            padding: '8px 14px',
+            borderRadius: '12px',
+            fontSize: '14px',
+            color: '#999',
+            maxWidth: '75%',
+          }}>
+            {msg}
+            <span style={{ fontSize: '11px', marginLeft: '8px', color: '#bbb' }}>대기 중</span>
+          </div>
+        ))}
         <div ref={chatEndRef} />
       </div>
 
@@ -223,8 +239,8 @@ export function AgentPanel({
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={isWizardMode ? '위저드 진행 중 — 버튼을 선택하세요' : '메시지 입력...'}
-          disabled={isWizardMode || loading}
+          disabled={isWizardMode}
+          placeholder={isWizardMode ? '위저드 진행 중 — 버튼을 선택하세요' : loading ? '메시지 입력 → 큐에 추가됩니다' : '메시지 입력...'}
           style={{
             flex: 1,
             padding: '10px 14px',
@@ -236,7 +252,7 @@ export function AgentPanel({
         />
         <button
           type="submit"
-          disabled={!input.trim() || loading || isWizardMode}
+          disabled={!input.trim() || isWizardMode}
           style={{
             padding: '10px 20px',
             background: '#1a1a2e',
@@ -245,7 +261,7 @@ export function AgentPanel({
             borderRadius: '8px',
             cursor: 'pointer',
             fontSize: '14px',
-            opacity: !input.trim() || loading || isWizardMode ? 0.5 : 1,
+            opacity: !input.trim() || isWizardMode ? 0.5 : 1,
           }}
         >
           전송

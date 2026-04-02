@@ -78,6 +78,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
   const [wizardActions, setWizardActions] = useState<WizardAction[]>([])
   const [currentMode, setCurrentMode] = useState<string>('idle')
   const [queueCount, setQueueCount] = useState(0)
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([])
   const configRef = useRef(config)
   configRef.current = config
   const messageQueue = useRef<string[]>([])
@@ -102,6 +103,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
     while (messageQueue.current.length > 0) {
       const text = messageQueue.current.shift()!
       setQueueCount(messageQueue.current.length)
+      setQueuedMessages([...messageQueue.current])
 
       addMessage(createUserMessage(text))
       setLoading(true)
@@ -138,6 +140,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
 
       messageQueue.current.push(text)
       setQueueCount(messageQueue.current.length)
+      setQueuedMessages([...messageQueue.current])
       processQueue()
     },
     [processQueue],
@@ -147,6 +150,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
   const clearQueue = useCallback(() => {
     messageQueue.current = []
     setQueueCount(0)
+    setQueuedMessages([])
   }, [])
 
   /** 버튼 클릭 처리 */
@@ -234,6 +238,7 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
     currentMode,
     wizardActions,
     queueCount,
+    queuedMessages,
     send,
     clickButton,
     startWizardAction,

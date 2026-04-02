@@ -629,6 +629,7 @@ header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: cente
 <div id="input-area">
   <input id="msg-input" type="text" placeholder="메시지 입력..." autocomplete="off" />
   <button id="send-btn" onclick="send()">전송</button>
+  <span id="queue-badge" style="display:none;font-size:12px;color:#666;margin-left:8px;"></span>
 </div>
 <script>
 const container = document.getElementById('chat-container');
@@ -837,40 +838,61 @@ function randomProgress(exclude) {
 }
 
 let sending = false;
+const messageQueue = [];
+let processing = false;
+
 async function send() {
-  if (sending) return;
   const text = input.value.trim();
   if (!text) return;
-  sending = true;
   input.value = '';
-  disablePreviousButtons();
-  addMsg(text, 'user');
-  sendBtn.disabled = true;
-  let currentMsg = randomProgress('');
-  const loading = addMsg(currentMsg, 'agent loading');
-  const progressInterval = setInterval(() => {
-    currentMsg = randomProgress(currentMsg);
-    loading.innerHTML = currentMsg;
-  }, 2000);
-  try {
-    const token = getToken();
-    const body = { message: text, context: buildContext() };
-    const res = await fetch('/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    clearInterval(progressInterval);
-    loading.remove();
-    renderResponse(data);
-  } catch (e) {
-    clearInterval(progressInterval);
-    loading.remove();
-    addMsg('오류가 발생했습니다: ' + e.message, 'system');
+  messageQueue.push(text);
+  updateQueueDisplay();
+  processQueue();
+}
+
+function updateQueueDisplay() {
+  const badge = document.getElementById('queue-badge');
+  if (messageQueue.length > 0) {
+    badge.textContent = messageQueue.length + '개 대기 중';
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
   }
-  sendBtn.disabled = false;
-  sending = false;
+}
+
+async function processQueue() {
+  if (processing || messageQueue.length === 0) return;
+  processing = true;
+  while (messageQueue.length > 0) {
+    const text = messageQueue.shift();
+    updateQueueDisplay();
+    disablePreviousButtons();
+    addMsg(text, 'user');
+    let currentMsg = randomProgress('');
+    const loading = addMsg(currentMsg, 'agent loading');
+    const progressInterval = setInterval(() => {
+      currentMsg = randomProgress(currentMsg);
+      loading.innerHTML = currentMsg;
+    }, 2000);
+    try {
+      const token = getToken();
+      const body = { message: text, context: buildContext() };
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      clearInterval(progressInterval);
+      loading.remove();
+      renderResponse(data);
+    } catch (e) {
+      clearInterval(progressInterval);
+      loading.remove();
+      addMsg('오류가 발생했습니다: ' + e.message, 'system');
+    }
+  }
+  processing = false;
   input.focus();
 }
 
