@@ -1,0 +1,102 @@
+# 대화 계약: 메인 상품페이지 설정
+#
+# 메인 상품페이지의 활성화 상태(ACTIVE/INACTIVE/EXCLUDED)를 제어.
+# /subscribe 페이지의 카드 노출/순서/버튼 상태에 직접 영향.
+#
+# 3개 레포 종합:
+# - product-agent: registry.yaml 액션 정의 + harness 처리
+# - web-agent: isActiveCard() 로직, /subscribe 카드 노출
+# - explorer-agent: check_subscribe_page, check_product_page 검증
+
+action: update_main_product_setting
+label: "메인 상품페이지 설정"
+
+required_context:
+  master_cms_id:
+    resolve: "search_masters로 검색"
+    if_multiple: "목록 보여주고 선택받기"
+    if_zero: "마스터를 찾을 수 없다고 안내"
+
+invariants:
+  - id: no_auto_execute
+    rule: "유저 확인 없이 상태 변경하면 안 된다"
+    enforcement: "Harness가 강제 (confirmation.require: true)"
+
+  - id: status_transition_valid
+    rule: "view_status는 ACTIVE, INACTIVE, EXCLUDED 중 하나여야 한다"
+    enforcement: "API 레벨 검증"
+
+  - id: active_means_visible
+    rule: "ACTIVE로 변경하면 /subscribe에서 카드가 노출되어야 한다"
+    verification: "check_subscribe_page → found: true, isButtonActive: true"
+    detail: |
+      isActiveCard(ACTIVE) = true
+      webLink = /products/group/{productGroupCode}
+      buttonLabel = '구독하기'
+
+  - id: inactive_means_coming_soon
+    rule: "INACTIVE로 변경하면 카드가 Coming Soon으로 표시되어야 한다 (US_CAMPUS+링크 예외)"
+    verification: "check_subscribe_page → isButtonActive: false, buttonLabel: 'Coming Soon'"
+    detail: |
+      isActiveCard(INACTIVE) = false (일반)
+      isActiveCard(INACTIVE, US_CAMPUS, link) = true (예외: 외부링크 활성)
+
+  - id: excluded_means_hidden
+    rule: "EXCLUDED로 변경하면 /subscribe에서 카드가 사라져야 한다"
+    verification: "check_subscribe_page → found: false"
+
+  - id: order_preserved
+    rule: "상태 변경 시 다른 카드의 노출 순서가 변하지 않아야 한다"
+    verification: "check_subscribe_page → 변경 전후 order 비교"
+
+  - id: product_page_accessible
+    rule: "ACTIVE 상태에서 상품 상세 페이지(/products/group/{code})가 접근 가능해야 한다"
+    verification: "check_product_page → accessible: true, canApply: true"
+
+  - id: target_confirmation
+    rule: "실행 전에 대상과 변경 내용을 명시해야 한다"
+    enforcement: "Harness confirmation 템플릿"
+
+disambiguation:
+  - input: "메인 상품 활성화해줘"
+    ambiguous: "어느 오피셜클럽의 메인 상품인지"
+    required: "마스터 검색 → 선택"
+
+  - input: "{master} 메인 상품 비공개해줘"
+    ambiguous: "INACTIVE vs EXCLUDED"
+    required: "카드는 남기고 Coming Soon으로 할지(INACTIVE), 카드 자체를 숨길지(EXCLUDED) 확인"
+
+  - input: "{master} 메인 상품 설정 변경해줘"
+    ambiguous: "어떤 상태로 변경할지"
+    required: "ACTIVE/INACTIVE/EXCLUDED 중 선택"
+
+verification:
+  # QA 흐름: 세팅 변경 → 목록 조회(순서 확인) → DOM 검증
+  #
+  # 1. 세팅 에이전트: view_status 변경
+  # 2. 세팅 에이전트: GET /v1/masters/product-group → 현재 목록+순서 파악
+  # 3. QA 에이전트: check_subscribe_page로 각 카드의 order/found/isButtonActive 검증
+  #    (순서는 API 조회 결과와 DOM 순서가 일치하는지 비교)
+
+  pre_check:
+    - api: get_master_product_page_list
+      purpose: "변경 전 목록+순서 스냅샷 (변경 후와 비교용)"
+
+  after_active:
+    - tool: check_subscribe_page
+      args: { product_group_code: "{product_group_code}" }
+      expected: { found: true, isButtonActive: true, order: "{expected_order}" }
+    - tool: check_product_page
+      args: { code: "{product_group_code}" }
+      expected: { accessible: true, canApply: true }
+
+  after_inactive:
+    - tool: check_subscribe_page
+      args: { product_group_code: "{product_group_code}" }
+      expected: { found: true, isButtonActive: false, buttonLabel: "Coming Soon", order: "{expected_order}" }
+
+  after_excluded:
+    - tool: check_subscribe_page
+      args: { product_group_code: "{product_group_code}" }
+      expected: { found: false }
+    - verify: "다른 카드의 order가 변경 전과 동일한지 (pre_check 스냅샷 비교)"
