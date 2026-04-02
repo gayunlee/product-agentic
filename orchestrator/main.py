@@ -225,7 +225,7 @@ async def run_qa_mode(task: str):
     print(f"{'='*60}\n")
 
     # 1. 환경 체크
-    print("[1/4] 환경 확인...")
+    print("[1/3] 환경 확인...")
     import subprocess
 
     status = subprocess.run(
@@ -235,36 +235,24 @@ async def run_qa_mode(task: str):
     )
     print(status.stdout)
 
-    # 2. 세팅 에이전트 — 멀티턴으로 세팅 변경
-    print("[2/4] 세팅 에이전트 멀티턴 실행...")
+    # 2-3. 세팅 에이전트 — 멀티턴으로 세팅 변경 + 순서 조회 (같은 세션)
+    print("[2/3] 세팅 에이전트 멀티턴 실행 (변경 + 확인 + 순서 조회)...")
     setting_responses = await run_multiturn_agent(
         messages=[
             task,
-            # 세팅 에이전트가 확인을 요청하면 자동 승인
             "네, 진행해주세요.",
+            "방금 변경한 오피셜클럽의 메인 상품페이지 목록과 순서를 조회해줘. "
+            "각 카드의 productGroupCode, viewStatus, 순서를 알려줘.",
         ],
         cwd=PRODUCT_AGENT_DIR,
         tools=WRITE_TOOLS,
         system_prompt=PRODUCT_QA,
     )
-
-    # 3. 세팅 에이전트에 순서 조회 (같은 멀티턴 세션이라 맥락 유지)
-    print("[3/4] 메인 상품페이지 순서 조회...")
-    order_responses = await run_multiturn_agent(
-        messages=[
-            f"방금 변경한 오피셜클럽의 메인 상품페이지 목록과 순서를 조회해줘. "
-            f"GET /v1/masters/product-group API로 현재 상태를 확인하고, "
-            f"각 카드의 productGroupCode, viewStatus, 순서를 알려줘.",
-        ],
-        cwd=PRODUCT_AGENT_DIR,
-        tools=WRITE_TOOLS,
-        system_prompt=PRODUCT_QA,
-    )
-    order_info = order_responses[-1] if order_responses else "조회 실패"
+    order_info = setting_responses[-1] if len(setting_responses) >= 3 else "조회 실패"
     print(f"  순서 정보: {order_info[:200]}...")
 
-    # 4. QA 에이전트 — 순서 정보 포함하여 DOM 검증
-    print("[4/4] QA 에이전트 검증...")
+    # 3. QA 에이전트 — 순서 정보 포함하여 DOM 검증
+    print("[3/3] QA 에이전트 검증...")
     verification_task = (
         f"다음 세팅 변경이 완료되었다:\n{setting_responses[-1] if setting_responses else task}\n\n"
         f"현재 메인 상품페이지 순서:\n{order_info}\n\n"

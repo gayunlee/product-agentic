@@ -12,12 +12,52 @@ from strands import tool
 
 ADMIN_BASE = os.environ.get("ADMIN_API_BASE_URL", "")
 ADMIN_TOKEN = os.environ.get("ADMIN_API_TOKEN", "")
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY", "")
 PARTNER_BASE = os.environ.get("PARTNER_API_BASE_URL", "")
 PARTNER_TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
 # 관리자센터 웹 URL (navigate 버튼용). 환경변수로 도메인 전환 가능
 ADMIN_WEB_BASE = os.environ.get("ADMIN_WEB_BASE_URL", "https://admin.us-insight.com")
 PLACEHOLDER_IMAGE = "https://placehold.co/990x1100/e8e8e8/999?text=PLACEHOLDER"
 MOCK_MODE = os.environ.get("MOCK_MODE", "").lower() in ("true", "1", "yes")
+
+# 자동 로그인 — EMAIL/PASSWORD가 있으면 시작 시 토큰 자동 발급
+_ADMIN_EMAIL = os.environ.get("EMAIL", "")
+_ADMIN_PASSWORD = os.environ.get("PASSWORD", "")
+
+
+def _auto_login() -> str:
+    """로그인 API로 access token을 자동 발급."""
+    global ADMIN_TOKEN
+    if not (ADMIN_BASE and _ADMIN_EMAIL and _ADMIN_PASSWORD):
+        return ADMIN_TOKEN
+    try:
+        resp = httpx.post(
+            f"{ADMIN_BASE}/auth/login",
+            json={"email": _ADMIN_EMAIL, "password": _ADMIN_PASSWORD},
+            timeout=10.0,
+        )
+        if resp.status_code == 200 or resp.status_code == 201:
+            data = resp.json()
+            token = data.get("token", {})
+            new_token = token.get("accessToken", "")
+            if new_token:
+                ADMIN_TOKEN = new_token
+                print(f"✅ 자동 로그인 성공 ({_ADMIN_EMAIL})")
+                return ADMIN_TOKEN
+        print(f"⚠️ 자동 로그인 실패: {resp.status_code}")
+    except Exception as e:
+        print(f"⚠️ 자동 로그인 오류: {e}")
+    return ADMIN_TOKEN
+
+
+def refresh_token() -> str:
+    """토큰 만료 시 재로그인. 401 에러 핸들링에서 호출."""
+    return _auto_login()
+
+
+# 시작 시 자동 로그인 (mock 모드가 아닐 때만)
+if not MOCK_MODE and _ADMIN_EMAIL and _ADMIN_PASSWORD:
+    _auto_login()
 
 # Mock 응답 데이터
 MOCK_RESPONSES = {
@@ -79,12 +119,31 @@ def _get_mock(tool_name: str, **kwargs) -> dict | list:
     return MOCK_RESPONSES.get(tool_name, {"mock": True, "tool": tool_name})
 
 
+def _admin_headers() -> dict:
+    headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+    if INTERNAL_API_KEY:
+        headers["internal-system-api-key"] = INTERNAL_API_KEY
+    return headers
+
+
 def _client() -> httpx.Client:
     return httpx.Client(
         base_url=ADMIN_BASE,
-        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+        headers=_admin_headers(),
         timeout=30.0,
     )
+
+
+def _request_with_retry(method: str, path: str, **kwargs) -> httpx.Response:
+    """API 요청 + 401 시 자동 재로그인 후 재시도."""
+    with _client() as c:
+        resp = getattr(c, method)(path, **kwargs)
+        if resp.status_code == 401 and _ADMIN_EMAIL:
+            refresh_token()
+            # 새 토큰으로 재시도
+            with httpx.Client(base_url=ADMIN_BASE, headers=_admin_headers(), timeout=30.0) as c2:
+                resp = getattr(c2, method)(path, **kwargs)
+        return resp
 
 
 def _partner_client() -> httpx.Client:
