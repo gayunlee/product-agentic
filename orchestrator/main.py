@@ -15,7 +15,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import query, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, AssistantMessage
 
 from orchestrator.config import (
     EXPLORER_AGENT_DIR,
@@ -173,14 +173,59 @@ async def run_dev_mode(task: str):
     print(f"\n리포트: {report}")
 
 
+async def run_multiturn_agent(
+    messages: list[str],
+    cwd: Path,
+    tools: list[str] | None = None,
+    system_prompt: str = "",
+    use_worktree: bool = False,
+) -> list[str]:
+    """멀티턴 에이전트 실행. 메시지를 순서대로 보내고 각 응답을 수집.
+
+    세팅 에이전트가 되물으면 오케스트레이터가 다음 메시지를 보내는 릴레이 패턴.
+    """
+    actual_cwd = _ensure_web_worktree() if use_worktree else cwd
+    responses = []
+
+    async with ClaudeSDKClient(
+        options=ClaudeAgentOptions(
+            cwd=str(actual_cwd),
+            allowed_tools=tools or WRITE_TOOLS,
+            max_turns=MAX_TURNS_PER_AGENT,
+            max_budget_usd=MAX_BUDGET_PER_AGENT,
+            permission_mode="acceptEdits",
+        ),
+    ) as client:
+        for i, msg in enumerate(messages):
+            full_msg = f"{system_prompt}\n\n## 태스크\n{msg}" if system_prompt and i == 0 else msg
+            print(f"  [{cwd.name}] 메시지 {i+1}/{len(messages)}: {msg[:80]}...")
+            await client.query(full_msg)
+
+            response_text = ""
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            response_text += block.text
+                if isinstance(message, ResultMessage):
+                    if message.subtype == "success" and message.result:
+                        response_text = message.result
+                    print(f"  [{cwd.name}] 응답 {i+1} 완료 (${message.total_cost_usd:.4f})")
+
+            responses.append(response_text)
+            print(f"  [{cwd.name}] 응답: {response_text[:200]}...")
+
+    return responses
+
+
 async def run_qa_mode(task: str):
-    """QA 모드: 환경 셋업 + 테스트 실행."""
+    """QA 모드: 멀티턴 릴레이 — 세팅 변경 → 순서 조회 → DOM 검증."""
     print(f"\n{'='*60}")
     print(f"  QA 모드 — {task}")
     print(f"{'='*60}\n")
 
     # 1. 환경 체크
-    print("[1/3] 환경 확인...")
+    print("[1/4] 환경 확인...")
     import subprocess
 
     status = subprocess.run(
@@ -190,22 +235,58 @@ async def run_qa_mode(task: str):
     )
     print(status.stdout)
 
-    # 2. 3개 에이전트 병렬 QA
-    print("[2/3] QA 에이전트 병렬 실행...")
-    product_qa, web_qa, explorer_qa = await asyncio.gather(
-        run_agent(task, PRODUCT_AGENT_DIR, WRITE_TOOLS, PRODUCT_QA),
-        run_agent(task, WEB_DIR, READ_TOOLS, WEB_QA, use_worktree=True),
-        run_agent(task, EXPLORER_AGENT_DIR, READ_TOOLS, EXPLORER_QA),
+    # 2. 세팅 에이전트 — 멀티턴으로 세팅 변경
+    print("[2/4] 세팅 에이전트 멀티턴 실행...")
+    setting_responses = await run_multiturn_agent(
+        messages=[
+            task,
+            # 세팅 에이전트가 확인을 요청하면 자동 승인
+            "네, 진행해주세요.",
+        ],
+        cwd=PRODUCT_AGENT_DIR,
+        tools=WRITE_TOOLS,
+        system_prompt=PRODUCT_QA,
     )
 
-    # 3. 리포트 생성
+    # 3. 세팅 에이전트에 순서 조회 (같은 멀티턴 세션이라 맥락 유지)
+    print("[3/4] 메인 상품페이지 순서 조회...")
+    order_responses = await run_multiturn_agent(
+        messages=[
+            f"방금 변경한 오피셜클럽의 메인 상품페이지 목록과 순서를 조회해줘. "
+            f"GET /v1/masters/product-group API로 현재 상태를 확인하고, "
+            f"각 카드의 productGroupCode, viewStatus, 순서를 알려줘.",
+        ],
+        cwd=PRODUCT_AGENT_DIR,
+        tools=WRITE_TOOLS,
+        system_prompt=PRODUCT_QA,
+    )
+    order_info = order_responses[-1] if order_responses else "조회 실패"
+    print(f"  순서 정보: {order_info[:200]}...")
+
+    # 4. QA 에이전트 — 순서 정보 포함하여 DOM 검증
+    print("[4/4] QA 에이전트 검증...")
+    verification_task = (
+        f"다음 세팅 변경이 완료되었다:\n{setting_responses[-1] if setting_responses else task}\n\n"
+        f"현재 메인 상품페이지 순서:\n{order_info}\n\n"
+        f"위 정보를 바탕으로 /subscribe에서 카드 노출 상태와 순서를 DOM으로 검증해줘. "
+        f"check_subscribe_page를 사용해서 found, order, isButtonActive, buttonLabel을 확인해."
+    )
+
+    explorer_result = await run_agent(
+        verification_task,
+        EXPLORER_AGENT_DIR,
+        READ_TOOLS,
+        EXPLORER_QA,
+    )
+
+    # 5. 리포트 생성
     report = generate_report(
         mode="qa",
         task=task,
         results={
-            "product-agent (세팅)": product_qa,
-            "web-agent (서비스 확인)": web_qa,
-            "explorer-agent (검증)": explorer_qa,
+            "세팅 에이전트 (멀티턴)": "\n---\n".join(setting_responses),
+            "순서 조회": order_info,
+            "QA 검증": explorer_result,
         },
     )
     print(f"\n리포트: {report}")
