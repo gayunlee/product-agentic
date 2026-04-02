@@ -77,8 +77,11 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
   const [loadingText, setLoadingText] = useState('')
   const [wizardActions, setWizardActions] = useState<WizardAction[]>([])
   const [currentMode, setCurrentMode] = useState<string>('idle')
+  const [queueCount, setQueueCount] = useState(0)
   const configRef = useRef(config)
   configRef.current = config
+  const messageQueue = useRef<string[]>([])
+  const isProcessing = useRef(false)
 
   const addMessage = useCallback((msg: ChatMessage) => {
     setMessages((prev) => [...prev, msg])
@@ -92,10 +95,13 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
     [addMessage],
   )
 
-  /** 텍스트 메시지 전송 */
-  const send = useCallback(
-    async (text: string) => {
-      if (!text.trim() || loading) return
+  const processQueue = useCallback(async () => {
+    if (isProcessing.current || messageQueue.current.length === 0) return
+
+    isProcessing.current = true
+    while (messageQueue.current.length > 0) {
+      const text = messageQueue.current.shift()!
+      setQueueCount(messageQueue.current.length)
 
       addMessage(createUserMessage(text))
       setLoading(true)
@@ -107,7 +113,8 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
 
       try {
         const response = await sendMessage(configRef.current, text)
-        handleResponse(response)
+        addMessage(createAssistantMessage(response))
+        setCurrentMode(response.mode)
       } catch (err) {
         addMessage({
           id: createId(),
@@ -120,9 +127,27 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
         setLoading(false)
         setLoadingText('')
       }
+    }
+    isProcessing.current = false
+  }, [addMessage])
+
+  /** 텍스트 메시지 전송 (로딩 중이면 큐에 추가) */
+  const send = useCallback(
+    async (text: string) => {
+      if (!text.trim()) return
+
+      messageQueue.current.push(text)
+      setQueueCount(messageQueue.current.length)
+      processQueue()
     },
-    [loading, addMessage, handleResponse],
+    [processQueue],
   )
+
+  /** 큐에 대기 중인 메시지 전체 취소 */
+  const clearQueue = useCallback(() => {
+    messageQueue.current = []
+    setQueueCount(0)
+  }, [])
 
   /** 버튼 클릭 처리 */
   const clickButton = useCallback(
@@ -208,10 +233,12 @@ export function useAgentChat({ config }: UseAgentChatOptions) {
     loadingText,
     currentMode,
     wizardActions,
+    queueCount,
     send,
     clickButton,
     startWizardAction,
     loadWizardActions,
     clear,
+    clearQueue,
   }
 }
