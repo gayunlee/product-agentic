@@ -1,0 +1,128 @@
+# 가이드 페이지 정의 — 에이전트가 관리자센터 페이지로 안내할 때 사용
+#
+# guide 도구가 이 파일을 읽어서:
+#   1. requires_input 확인 → 빠진 입력 있으면 질문
+#   2. required_params → API 호출로 값 확보
+#   3. URL 템플릿에 params 적용
+#   4. navigate 버튼 반환
+
+guides:
+  # ─── 상품 ─────────────────────────────────────────
+  product_page_create:
+    label: "상품 페이지 생성"
+    url: "/product/page/create?masterId={masterId}&masterObjectId={masterObjectId}"
+    requires_input:
+      master_name: "어느 오피셜클럽에서 상품페이지를 만드시겠어요?"
+    required_params:
+      masterId:
+        resolve: search_masters
+        from: cmsId
+      masterObjectId:
+        resolve: search_masters
+        from: id
+
+  product_page_list:
+    label: "상품 페이지 목록"
+    url: "/product"
+
+  product_page_detail:
+    label: "상품 페이지 상세"
+    url: "/product/page/{id}?masterId={masterId}"
+    required_params:
+      id:
+        from: page_object_id
+      masterId:
+        resolve: search_masters
+        from: cmsId
+
+  product_page_edit:
+    label: "상품 페이지 수정"
+    url: "/product/page/{id}?tab=settings"
+    required_params:
+      id:
+        from: page_object_id
+
+  product_page_options:
+    label: "상품 옵션 관리"
+    url: "/product/page/{id}?tab=options"
+    required_params:
+      id:
+        from: page_object_id
+
+  product_create:
+    label: "상품 옵션 등록"
+    url: "/product/create?productPageId={productPageId}&productType={productType}&masterId={masterId}"
+    requires_input:
+      master_name: "어느 오피셜클럽의 상품페이지에 상품을 등록하시겠어요?"
+    required_params:
+      productPageId:
+        from: page_id
+      productType:
+        from: product_type
+      masterId:
+        resolve: search_masters
+        from: cmsId
+
+  # ─── 메인 상품 페이지 ──────────────────────────────
+  main_product:
+    label: "메인 상품 페이지 관리"
+    url: "/product/page/list"
+
+  # ─── 오피셜클럽/마스터 ─────────────────────────────
+  official_club:
+    label: "오피셜클럽 상세"
+    url: "/official-club/{masterId}"
+    requires_input:
+      master_name: "어느 오피셜클럽을 확인하시겠어요?"
+    required_params:
+      masterId:
+        resolve: search_masters
+        from: cmsId
+
+  official_club_list:
+    label: "오피셜클럽 목록"
+    url: "/official-club"
+
+  official_club_create:
+    label: "오피셜클럽 생성"
+    url: "/official-club/create"
+
+  master_list:
+    label: "마스터 관리"
+    url: "/master"
+
+  master_page:
+    label: "마스터 페이지 관리"
+    url: "/master/page"
+
+  # ─── 커뮤니티 ──────────────────────────────────────
+  board_setting:
+    label: "게시판 설정"
+    url: "/board/setting"
+
+  board:
+    label: "게시글 관리"
+    url: "/board"
+
+  donation:
+    label: "응원하기 관리"
+    url: "/donation"
+
+  letter:
+    label: "편지글 관리"
+    url: "/cs/letter"
+
+  # ─── 외부 ──────────────────────────────────────────
+  partner_series:
+    label: "파트너센터 시리즈 생성"
+    url: "https://master.us-insight.com"
+    external: true
+
+  # ─── 기타 ──────────────────────────────────────────
+  product_sales:
+    label: "상품 결제 내역"
+    url: "/product/sales"
+
+  subscribe:
+    label: "구독 관리"
+    url: "/subscribe"

@@ -60,9 +60,14 @@ O6. 하위 에이전트 응답을 가공하지 않고 그대로 전달.
 유저: "노출은 하는데 구매는 막고 싶은데"        → domain_expert (신청 기간 개념)
 유저: "오피셜클럽명 필드에 뭐가 많은데 다 뭐야?" → domain_expert (필드 개념 설명)
 
+### 생성/설정 안내 → guide (페이지 이동 안내)
+유저: "상품페이지 새로 만들려고"               → 오피셜클럽 먼저 물어본 후 guide("product_page_create", master_name)
+유저: "조조형우 상품페이지 만들어줘"           → guide("product_page_create", "조조형우") (오피셜클럽 이미 지정)
+유저: "시리즈가 필요하다는데 어디서 만들어야돼?" → guide("partner_series")
+유저: "오피셜클럽 어디서 만들어?"              → guide("official_club_create")
+유저: "메인 상품 페이지 설정 어디서 해?"        → guide("main_product")
+
 ### 특정 대상 지칭 → executor
-유저: "상품페이지 새로 만들려고"               → executor (가이드)
-유저: "시리즈가 필요하다는데 어디서 만들어야돼?" → executor (가이드 — 파트너센터 안내)
 유저: "상품 비공개해줘"                       → executor (실행)
 유저: "왜 상품페이지 노출이 안돼?"            → executor (진단)
 유저: "홍춘욱 상품옵션 뭐있어?"              → executor (특정 대상 조회)
@@ -119,6 +124,16 @@ O12. 하위 에이전트 호출 시, 유저 원문을 그대로 전달하지 말
     GOOD: execute("조조형우 오피셜클럽(cmsId=42)의 '월간 리포트' 상품페이지를 비공개 처리해줘.")
 
 """
+
+
+_guides_cache = None
+
+def _load_guides() -> dict:
+    global _guides_cache
+    if _guides_cache is None:
+        from src.domain_loader import load_yaml
+        _guides_cache = load_yaml("actions/guides.yaml").get("guides", {})
+    return _guides_cache
 
 
 def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_context: str = "") -> Agent:
@@ -214,45 +229,66 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
 
     @strands_tool
     def guide(page_type: str, master_name: str = "") -> str:
-        """가이드. 관리자센터 페이지 이동 안내에 사용.
-        생성, 수정, 설정 등 관리자센터에서 직접 해야 하는 작업을 안내합니다.
+        """가이드. 관리자센터 페이지 이동 안내. guides.yaml 기반 선언적 동작.
 
-        오피셜클럽이 필요한 페이지(상품페이지 생성 등)는 master_name을 함께 전달하세요.
-        유저가 오피셜클럽을 지정하지 않았으면 이 도구를 호출하지 말고 먼저 물어보세요.
+        "만들려고", "어디서 설정해?" 같은 페이지 이동 요청에 사용.
+        오피셜클럽 필요한 페이지는 master_name 함께 전달. 미지정 시 호출하지 말고 먼저 물어볼 것.
 
         Args:
-            page_type: 이동할 페이지 유형 — "product_page_create"(상품페이지 생성), "product_page_list"(목록), "official_club"(오피셜클럽), "main_product"(메인 상품), "board_setting"(게시판 설정)
-            master_name: 대상 오피셜클럽 이름 (예: "조조형우"). 생성/수정 안내 시 필수.
+            page_type: guides.yaml의 키 (product_page_create, official_club 등)
+            master_name: 오피셜클럽 이름. requires_input에 master_name 있으면 필수.
         """
-        from src.tools.admin_api import navigate, search_masters
+        from src.tools.admin_api import search_masters
         from src.agents.response import AgentResponse, render_response_json
 
-        # 1. 오피셜클럽 검색 → masterId, masterObjectId 확보
-        master = None
+        guides = _load_guides()
+        guide_def = guides.get(page_type)
+        if not guide_def:
+            return render_response_json(AgentResponse(
+                type="error", summary=f"알 수 없는 가이드: {page_type}",
+                data={"available": list(guides.keys())},
+            ))
+
+        # requires_input 체크
+        requires_input = guide_def.get("requires_input", {})
+        if "master_name" in requires_input and not master_name:
+            return render_response_json(AgentResponse(
+                type="question", summary=requires_input["master_name"], data={},
+            ))
+
+        # required_params resolve
         params = {}
-        if master_name:
-            masters_result = search_masters(search_keyword=master_name)
-            masters = masters_result.get("masters", [])
-            if masters:
+        try:
+            if master_name and guide_def.get("required_params"):
+                masters_result = search_masters(search_keyword=master_name)
+                masters = masters_result.get("masters", [])
+                if not masters:
+                    return render_response_json(AgentResponse(
+                        type="error", summary=f"'{master_name}' 오피셜클럽을 찾을 수 없습니다.", data={},
+                    ))
                 master = masters[0]
-                params["masterId"] = str(master.get("cmsId", ""))
-                params["masterObjectId"] = str(master.get("id", ""))
+                for param_name, param_def in guide_def["required_params"].items():
+                    if isinstance(param_def, dict) and param_def.get("resolve") == "search_masters":
+                        params[param_name] = str(master.get(param_def.get("from", ""), ""))
+        except Exception as e:
+            print(f"⚠️ guide params resolve 에러: {e}")
+            import traceback
+            traceback.print_exc()
 
-        # 2. navigate URL 생성 (PAGE_MAP 템플릿에 params 적용)
-        result = navigate(page=page_type, params=params if params else None)
-        url = result.get("url", "/product/page/list")
-        label = result.get("label", "관리자센터")
+        # URL 조립 + navigate 버튼
+        url = guide_def["url"]
+        for key, value in params.items():
+            url = url.replace(f"{{{key}}}", value)
+        # 미치환 파라미터 제거 (값 못 구한 경우)
+        import re
+        url = re.sub(r'[?&]\w+=\{[^}]+\}', '', url)
+        label = guide_def.get("label", page_type)
+        summary = f"{master_name} — {label}" if master_name else label
 
-        # 3. 응답
-        master_display = master.get("name", master_name) if master else ""
-        summary = f"{master_display} — {label}" if master_display else label
-
-        resp = AgentResponse(
-            type="guide",
-            summary=summary,
-            data={"label": label, "url": url, "master": master_display},
-        )
-        return render_response_json(resp)
+        return render_response_json(AgentResponse(
+            type="guide", summary=summary,
+            data={"label": label, "url": url, "master": master_name},
+        ))
 
     @strands_tool
     def ask_domain_expert(question: str) -> str:
