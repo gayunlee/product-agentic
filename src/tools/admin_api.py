@@ -247,7 +247,9 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
                             seen_ids.add(cms_id)
                             merged.append(m)
                 if merged:
-                    result = {"masters": merged} if isinstance(result, dict) else merged
+                    result = {"masters": merged}
+        if isinstance(result, list):
+            result = {"masters": result}
         return result
     params = {}
     if search_keyword:
@@ -258,6 +260,9 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
     with _client() as c:
         r = c.get("/v1/masters", params=params)
         result = _safe_request(r)
+    # API가 list를 직접 반환하는 경우 dict로 래핑
+    if isinstance(result, list):
+        result = {"masters": result}
     if not result.get("masters") and search_keyword:
         words = search_keyword.split()
         if len(words) > 1:
@@ -270,6 +275,8 @@ def search_masters(search_keyword: str = "", public_type: str = "ALL") -> dict:
                 with _client() as c:
                     r = c.get("/v1/masters", params=params)
                     partial = _safe_request(r)
+                if isinstance(partial, list):
+                    partial = {"masters": partial}
                 for m in partial.get("masters", []):
                     cms_id = m.get("cmsId", m.get("id", ""))
                     if cms_id not in seen_ids:
