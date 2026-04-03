@@ -50,10 +50,20 @@ def _get_read_api_map() -> dict:
     from src.tools.admin_api import (
         get_product_page_list,
         get_product_list_by_page,
+        get_master_detail,
+        get_main_product,
+        get_product_page_detail,
+        get_product_detail,
+        get_weblink_target,
     )
     return {
         "get_product_page_list": get_product_page_list,
         "get_product_list_by_page": get_product_list_by_page,
+        "get_master_detail": get_master_detail,
+        "get_main_product": get_main_product,
+        "get_product_page_detail": get_product_page_detail,
+        "get_product_detail": get_product_detail,
+        "get_weblink_target": get_weblink_target,
     }
 
 
@@ -99,7 +109,38 @@ class ActionHarness:
                 data={"missing_slots": missing},
             )
 
-        # 2. prerequisites 체크 (데이터가 컨텍스트에 있을 때만 검증)
+        # 2. visibility_chain 체크 (선언적 도메인 규칙)
+        chain_name = action_def.get("visibility_chain")
+        if chain_name and chain_name in self.chains:
+            chain = self.chains[chain_name]
+            chain_api_map = self._get_read_api_map()
+            for req in chain.get("requires", []):
+                api_name = req.get("api")
+                api_params_tmpl = req.get("api_params", {})
+                check_expr = req.get("check", "")
+                if not check_expr or not api_name:
+                    continue
+                # API 호출로 데이터 조회
+                if api_name in chain_api_map:
+                    resolved_params = {k: format_template(str(v), ctx) for k, v in api_params_tmpl.items()}
+                    try:
+                        api_data = chain_api_map[api_name](**resolved_params)
+                        # 조회 결과를 컨텍스트에 병합
+                        if isinstance(api_data, dict):
+                            # check 표현식의 prefix(예: "master.xxx")에서 prefix 추출
+                            prefix = check_expr.split(".")[0] if "." in check_expr else ""
+                            if prefix and prefix not in ctx:
+                                ctx[prefix] = api_data
+                    except Exception:
+                        pass  # API 실패 시 스킵 (prerequisites에서 잡힘)
+                # 체크 실행
+                left_path = check_expr.split()[0] if check_expr else ""
+                left_value = _resolve_path(ctx, left_path) if left_path else None
+                if left_value is not None and not evaluate_check(check_expr, ctx):
+                    fail_msg = format_template(req.get("fail_message", "사전조건 미충족"), ctx)
+                    return self._error(fail_msg)
+
+        # 3. prerequisites 체크 (데이터가 컨텍스트에 있을 때만 검증)
         for prereq in action_def.get("prerequisites", []):
             check_expr = prereq.get("check", "")
             if not check_expr:

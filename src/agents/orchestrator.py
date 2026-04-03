@@ -213,24 +213,44 @@ def create_orchestrator_agent(executor: Agent, domain_agent: Agent, memory_conte
         return result_text
 
     @strands_tool
-    def guide(page_type: str) -> str:
+    def guide(page_type: str, master_name: str = "") -> str:
         """가이드. 관리자센터 페이지 이동 안내에 사용.
-        생성, 수정, 설정 페이지로의 이동을 안내합니다.
+        생성, 수정, 설정 등 관리자센터에서 직접 해야 하는 작업을 안내합니다.
+
+        오피셜클럽이 필요한 페이지(상품페이지 생성 등)는 master_name을 함께 전달하세요.
+        유저가 오피셜클럽을 지정하지 않았으면 이 도구를 호출하지 말고 먼저 물어보세요.
 
         Args:
             page_type: 이동할 페이지 유형 — "product_page_create"(상품페이지 생성), "product_page_list"(목록), "official_club"(오피셜클럽), "main_product"(메인 상품), "board_setting"(게시판 설정)
+            master_name: 대상 오피셜클럽 이름 (예: "조조형우"). 생성/수정 안내 시 필수.
         """
-        from src.tools.admin_api import navigate
+        from src.tools.admin_api import navigate, search_masters
         from src.agents.response import AgentResponse, render_response_json
 
-        result = navigate(page_type=page_type)
+        # 1. 오피셜클럽 검색 → masterId, masterObjectId 확보
+        master = None
+        params = {}
+        if master_name:
+            masters_result = search_masters(search_keyword=master_name)
+            masters = masters_result.get("masters", [])
+            if masters:
+                master = masters[0]
+                params["masterId"] = str(master.get("cmsId", ""))
+                params["masterObjectId"] = str(master.get("id", ""))
+
+        # 2. navigate URL 생성 (PAGE_MAP 템플릿에 params 적용)
+        result = navigate(page=page_type, params=params if params else None)
         url = result.get("url", "/product/page/list")
         label = result.get("label", "관리자센터")
 
+        # 3. 응답
+        master_display = master.get("name", master_name) if master else ""
+        summary = f"{master_display} — {label}" if master_display else label
+
         resp = AgentResponse(
             type="guide",
-            summary=f"{label} 페이지로 이동하세요.",
-            data={"label": label, "url": url, "steps": [f"{label} 페이지에서 설정을 진행하세요."]},
+            summary=summary,
+            data={"label": label, "url": url, "master": master_display},
         )
         return render_response_json(resp)
 

@@ -649,6 +649,50 @@ def update_product_page(product_page_id: str, updates: dict) -> dict:
         return _safe_request(r)
 
 
+def get_main_product(master_id: str) -> dict:
+    """메인 상품페이지 설정 조회. GET /v1/masters/{master_id}/main-product-group"""
+    if MOCK_MODE:
+        return {"productGroupViewStatus": "ACTIVE", "productGroupType": "US_PLUS"}
+    with _client() as c:
+        r = c.get(f"/v1/masters/{master_id}/main-product-group")
+        return _safe_request(r)
+
+
+def get_product_detail(product_id: str) -> dict:
+    """상품 상세 조회. visibility_chain의 product_visible 체인에서 사용."""
+    if MOCK_MODE:
+        return {"id": product_id, "isDisplay": True, "name": "mock 상품"}
+    with _client() as c:
+        r = c.get(f"/v1/product/{product_id}")
+        return _safe_request(r)
+
+
+def get_weblink_target(master_id: str) -> dict:
+    """웹링크 타겟 상태 조회. visibility_chain의 weblink 체인에서 사용.
+
+    메인 상품페이지의 웹링크가 가리키는 상품페이지의 상태를 확인.
+    """
+    if MOCK_MODE:
+        return {"status": "ACTIVE", "url": "/products/group/mock"}
+    # 메인 상품에서 웹링크 URL 추출 → 해당 페이지 상태 확인
+    main = get_main_product(master_id)
+    link = main.get("productGroupLink", "")
+    if not link:
+        return {"status": "INACTIVE", "url": "", "error": "웹링크 미설정"}
+    # 링크에서 product group code 추출하여 상태 확인
+    import re
+    match = re.search(r"/products/group/(\d+)", link)
+    if match:
+        code = match.group(1)
+        with _client() as c:
+            r = c.get(f"/v1/product-group", params={"code": code})
+            data = _safe_request(r)
+            pages = data if isinstance(data, list) else data.get("pages", [data])
+            if pages:
+                return {"status": pages[0].get("status", "UNKNOWN"), "url": link}
+    return {"status": "UNKNOWN", "url": link}
+
+
 @tool
 def update_main_product_setting(
     master_id: str,
@@ -689,7 +733,7 @@ def update_main_product_setting(
 PAGE_MAP = {
     # 상품
     "product_page_list": {"url": "/product", "label": "상품 페이지 목록"},
-    "product_page_create": {"url": "/product/page/create", "label": "상품 페이지 생성"},
+    "product_page_create": {"url": "/product/page/create?masterId={masterId}&masterObjectId={masterObjectId}", "label": "상품 페이지 생성"},
     "product_page_detail": {"url": "/product/page/{id}", "label": "상품 페이지 상세"},
     "product_page_edit": {"url": "/product/page/{id}?tab=settings", "label": "상품 페이지 수정"},
     "product_page_options": {"url": "/product/page/{id}?tab=options", "label": "상품 옵션 관리"},

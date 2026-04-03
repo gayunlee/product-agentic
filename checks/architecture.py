@@ -216,12 +216,135 @@ def check_prompt_enforcement() -> CheckResult:
     return CheckResult("Prompt Enforcement (경고)", passed=True, message="프롬프트 강제 표현 없음")
 
 
+def check_visibility_chain_apis() -> CheckResult:
+    """visibility_chain.yaml에서 참조하는 API 함수가 admin_api.py에 존재하는지.
+
+    규칙: 선언된 API가 코드에 없으면 선언이 무의미.
+    """
+    chain_file = ROOT / "domain" / "visibility_chain.yaml"
+    if not chain_file.exists():
+        return CheckResult("Visibility Chain APIs", passed=True, message="visibility_chain.yaml 없음 (스킵)")
+
+    chain_data = _load_yaml(chain_file)
+    violations = []
+
+    # chain의 requires에서 api 필드 추출
+    api_names = set()
+    for chain_name, chain_def in chain_data.get("chains", {}).items():
+        for req in chain_def.get("requires", []):
+            api = req.get("api")
+            if api:
+                api_names.add(api)
+
+    # admin_api.py에 해당 함수가 있는지 (@tool 데코레이터 포함)
+    api_file = SRC_DIR / "tools" / "admin_api.py"
+    for api_name in sorted(api_names):
+        hits = _grep(rf"def {api_name}\b", api_file)
+        if not hits:
+            violations.append({
+                "file": str(chain_file),
+                "line": 0,
+                "text": f"API 함수 '{api_name}' 없음 — visibility_chain에서 참조하지만 admin_api.py에 미구현",
+            })
+
+    if violations:
+        return CheckResult(
+            "Visibility Chain APIs",
+            passed=False,
+            message=f"누락 API {len(violations)}건",
+            violations=violations,
+        )
+    return CheckResult("Visibility Chain APIs", passed=True, message="모든 chain API 함수 존재")
+
+
+def check_visibility_chain_used() -> CheckResult:
+    """harness.py에서 visibility_chain을 실제로 사용하는지.
+
+    규칙: 로드만 하고 안 쓰면 선언이 무의미.
+    """
+    harness_file = SRC_DIR / "harness.py"
+    if not harness_file.exists():
+        return CheckResult("Visibility Chain Usage", passed=True, message="harness.py 없음 (스킵)")
+
+    # self.chains 로드 여부
+    load_hits = _grep(r"self.chains", harness_file)
+    # validate_and_confirm에서 chains 사용 여부
+    use_hits = _grep(r"chain_name", harness_file)
+
+    if load_hits and not use_hits:
+        return CheckResult(
+            "Visibility Chain Usage",
+            passed=False,
+            message="visibility_chain을 로드하지만 사용하지 않음",
+            violations=[{"file": str(harness_file), "line": 0, "text": "self.chains 로드 후 validate_and_confirm()에서 미사용"}],
+        )
+    if not load_hits:
+        return CheckResult(
+            "Visibility Chain Usage",
+            passed=False,
+            message="visibility_chain 로드 자체가 없음",
+            violations=[{"file": str(harness_file), "line": 0, "text": "visibility_chain.yaml 미로드"}],
+        )
+    return CheckResult("Visibility Chain Usage", passed=True, message="visibility_chain 로드 및 사용 확인")
+
+
+def check_knowledge_api_exists() -> CheckResult:
+    """knowledge/*.md에서 참조하는 API 함수가 admin_api.py에 존재하는지.
+
+    규칙: 문서에서 정의한 플로우가 실제로 실행 가능해야 함.
+    """
+    knowledge_dir = ROOT / "knowledge"
+    if not knowledge_dir.exists():
+        return CheckResult("Knowledge API Exists", passed=True, message="knowledge/ 없음 (스킵)")
+
+    api_file = SRC_DIR / "tools" / "admin_api.py"
+    violations = []
+
+    # knowledge md에서 update_*, get_* 함수명 추출
+    for md_file in knowledge_dir.glob("*.md"):
+        hits = _grep(r"\b(update_\w+|get_\w+|create_\w+|delete_\w+)\b", md_file)
+        for hit in hits:
+            # 함수명 추출
+            import re
+            funcs = re.findall(r"\b((?:update|get|create|delete)_\w+)\b", hit["text"])
+            for func in funcs:
+                # admin_api.py에 존재하는지
+                exists = _grep(rf"def {func}\b", api_file)
+                if not exists:
+                    violations.append({
+                        "file": str(md_file),
+                        "line": hit["line"],
+                        "text": f"API 함수 '{func}' 없음 — knowledge에서 참조하지만 미구현",
+                    })
+
+    # 중복 제거
+    seen = set()
+    unique = []
+    for v in violations:
+        key = v["text"]
+        if key not in seen:
+            seen.add(key)
+            unique.append(v)
+
+    if unique:
+        return CheckResult(
+            "Knowledge API Exists",
+            passed=False,
+            message=f"누락 API {len(unique)}건 (knowledge 참조)",
+            violations=unique,
+        )
+    return CheckResult("Knowledge API Exists", passed=True, message="knowledge 참조 API 모두 존재")
+
+
 # ─── runner ─────────────────────────────────────────────────────────
 
 ALL_CHECKS = [
     check_yaml_ssot,
     check_single_gate,
     check_contract_integrity,
+    check_visibility_chain_apis,
+    check_visibility_chain_used,
+    check_knowledge_api_exists,
     check_prompt_enforcement,
 ]
 
